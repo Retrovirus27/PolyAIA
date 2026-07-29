@@ -1,0 +1,526 @@
+---
+title: "PolyAIA — worked example"
+author: "Yordi Tamayo"
+output:
+  html_notebook:
+    theme: sandstone
+    toc: true
+    toc_float: true
+    fig_width: 12
+    fig_height: 5
+    fig_caption: true
+  html_document:
+    theme: sandstone
+    toc: yes
+    toc_float: yes
+    fig_width: 12
+    fig_height: 5
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r knitr-opts, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, collapse = TRUE)
+```
+
+This is a runnable walkthrough of `PolyAIA` on a real mouse cortex
+dataset (3xTg / B6, control vs. alcohol; Sanna et al.). It starts from a
+**pre-built Seurat object that already carries an annotated `polyA`
+assay**, so you can reproduce the interesting part — differential polyA
+usage — without needing the raw 10X and polyA-peak files.
+
+Because that object is already complete, the analysis comes first
+(sections 1–2). Section 3 then walks through the rest of the workflow:
+how the object was built from raw data, and the QC / integration /
+visualization helpers.
+
+------------------------------------------------------------------------
+
+# 0. Setup
+
+```{r libraries}
+library(PolyAIA)
+library(Seurat)
+library(dplyr)
+```
+
+## Load the example data
+
+The example workspace (`Seurat_PolyA.RData`) contains everything the
+walkthrough needs:
+
+| Object | What it is |
+|-------------------|-----------------------------------------------------|
+| `seurat_polyA` | Seurat object with annotated `RNA` + `polyA` assays |
+| `rmsk` | UCSC RepeatMasker track (mm10), used in section 4 |
+
+It is hosted on Mendeley Data and downloaded on first run (a few GB — the
+default 60 s timeout is raised, and the file is only fetched if it isn't
+already on disk).
+
+```{r download}
+# Direct download URL for Seurat_PolyA.RData.
+# Get it from the dataset page -> right-click the file -> "Copy link address".
+data_url  <- ""                                  # <-- paste the URL here
+data_file <- "rds_files/Seurat_PolyA.RData"
+
+dir.create(dirname(data_file), showWarnings = FALSE, recursive = TRUE)
+
+if (!file.exists(data_file)) {
+  if (!nzchar(data_url)) {
+    stop("Set `data_url` above, or place Seurat_PolyA.RData at: ", data_file)
+  }
+  options(timeout = 7200)                        # default 60 s is far too short
+  download.file(data_url, data_file, mode = "wb")   # mode="wb" is required
+}
+```
+
+```{r config}
+load(file = data_file)
+```
+
+The object carries the two assays `PolyAIA` needs, plus the cell-type
+annotations produced by Azimuth (`CellType` = broad class,
+`Subpopulation` = fine label) and the experimental design columns:
+
+```{r explore}
+SeuratObject::Assays(seurat_obj)
+table(seurat_obj$CellType)
+table(seurat_obj$Strain, seurat_obj$Treatment)
+```
+
+
+------------------------------------------------------------------------
+
+# 1. Differential polyA usage
+
+This is the core of the package. `DEPsMatrix()` folds the whole APA
+analysis into one call:
+
+1.  (optional) polyA residuals via `PASTA::CalcPolyAResiduals()` and
+    per-comparison differential testing via `DEPolyAPeaks()`;
+2.  merging the results with peak- and gene-level metadata;
+3.  pseudobulk aggregation;
+4.  per-(cell type × comparison) RED / DPAU / gDPAU scoring.
+
+## Define the comparisons
+
+One row per contrast. `ident1`/`ident2` are the identity tokens built
+from `condition_cols`; `treatment`/`control` are the pseudobulk
+count-column prefixes (they follow the `group.by` order); `Condition` is
+the label. Any extra column (here `Strain`, `Treatment`) is stamped onto
+every output row.
+
+```{r comparisons}
+comparisons <- data.frame(
+  ident1    = c("Alcohol_B6",               "Control_3xTg",               "Alcohol_3xTg"),
+  ident2    = c("Control_B6",               "Control_B6",                 "Control_B6"),
+  treatment = c("B6_Alcohol",               "3xTg_Control",               "3xTg_Alcohol"),
+  control   = c("B6_Control",               "B6_Control",                 "B6_Control"),
+  Condition = c("B6_Alcohol_vs_B6_Control", "3xTg_Control_vs_B6_Control", "3xTg_Alcohol_vs_B6_Control"),
+  Strain    = c("B6",                       "3xTg",                       "3xTg"),
+  Treatment = c("Alcohol",                  "Control",                    "Alcohol"),
+  stringsAsFactors = FALSE
+)
+comparisons
+```
+
+## Run
+
+```{r deps}
+set.seed(100)
+
+deps <- PolyAIA::DEPsMatrix(
+  seu             = seurat_obj,
+  comparisons     = comparisons,
+  celltype_col    = "Subpopulation",
+  condition_cols  = c("Treatment", "Strain"),   # -> "Control_B6", "Alcohol_3xTg", ...
+  group.by        = c("Strain", "Treatment", "Subpopulation", "Number"),
+  gene.names      = "Gene_Symbol",
+
+  # Residual background: Idents built as Treatment+Strain with no separator
+  background      = "ControlB6",
+  background_cols = c("Treatment", "Strain"),
+  background_sep  = "",
+  min.counts.background = 5,
+
+  Pasta           = FALSE,        # FALSE = skip residuals/DE, RED from counts only
+  min_cells       = 10,          # drop subpopulations with too few cells
+  filter_method   = "edgeR",
+  repeat_masker   = "Remove",    # drop intronic TE-overlapping polyA sites
+  rmsk            = rmsk,
+  return_seurat   = FALSE         # also hand back the residual-bearing object
+)
+
+red_scores <- deps$red_scores
+polyAdb    <- deps$polyAdb   # analyzed peak table (for PolyAPlot)
+```
+
+Note: `features` is derived internally from the polyA assay's
+`Intron.exon.location` (3'-most exon + intron by default, see
+`genomic_positions`), so no separate `Peaksdb()` call is needed.
+
+## The result
+
+```{r inspect}
+table(red_scores$Cells, red_scores$Treatment, red_scores$Strain)
+```
+
+Each row is one proximal/distal polyA-site pair in one cell type and
+comparison. The distal-usage metrics (all treatment − control):
+
+-   **`RED`** — Relative Expression Difference,
+    `log2(d/p)_treatment − log2(d/p)_control`.
+-   **`DPAU`** — classic 2-site index for that pair,
+    `distal / (distal + proximal)` ([Wang et al.
+    2022](https://doi.org/10.1073/pnas.2113504118)).
+-   **`gDPAU`** — gene-level generalization weighted by site position,
+    `1/(n−1) · Σ (i−1)·pᵢ` over all of the gene's sites; equals `DPAU`
+    when n = 2.
+
+`RED_Direction` / `RLD_direction` label the shift as `"Lengthened"` or
+`"Shortened"`.
+
+```{r top-hits}
+red_scores %>%
+  filter(!is.na(RED), RED_LRT_padj < 0.05) %>%
+  arrange(desc(abs(RED))) %>%
+  select(Cells, Condition, Gene_symbol, RED, RED_Direction,
+         DPAU, gDPAU, RED_LRT_padj) %>%
+  head(15)
+```
+
+## Summary plots
+
+A four-panel overview of the RED results: how many polyA sites the analyzed
+genes carry, how the tested pairs split between intronic (REDi) and exonic
+(REDu) events, and the direction of the significant shifts in one cell type.
+
+```{r summary-plots, fig.width=12, fig.height=9}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+### A. polyA sites per gene ---------------------------------------------------
+# One row per gene (npas is gene-level, so distinct() avoids counting a gene
+# once per pair/cell type/comparison). Genes with 10+ sites are pooled into "M".
+p_npas <- red_scores %>%
+  distinct(Gene_symbol, npas) %>%
+  mutate(
+    npas_bin = ifelse(npas >= 10, "M", as.character(npas)),
+    npas_bin = factor(npas_bin, levels = c(as.character(1:9), "M"))
+  ) %>%
+  count(npas_bin) %>%
+  ggplot(aes(x = npas_bin, y = n)) +
+  ylim(0,5000) +
+  geom_col(fill = "darkorange") +
+  geom_text(aes(label = n), vjust = -0.3) +
+  labs(x = "poly(A) sites per gene", y = "Gene number")
+
+### B. REDi vs REDu composition -----------------------------------------------
+# Pie chart of the tested proximal/distal pairs in L2/3 IT: REDi = the proximal
+# site is intronic, REDu = both sites are in the 3' most exon.
+p_redtype <- red_scores %>%
+  filter(Cells == "L2/3 IT" ) %>%
+  count(RED_type) %>%
+  ggplot(aes(x = "", y = n, fill = RED_type)) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = paste0(RED_type, "\n(", n, ")")), position = position_stack(vjust = 0.5)) +
+  theme_void() +
+  theme(legend.position = "none")
+
+### C. REDi distribution (L2/3 IT) --------------------------------------------
+# Density of significant intronic events (|RED| > 0.25, padj < 0.1). The median
+# annotation shows whether the shift is globally towards lengthening (> 0) or
+# shortening (< 0).
+df_redi <- red_scores %>%
+  filter(Cells == "L2/3 IT" & abs(RED) > 0.25 & RED_LRT_padj < 0.1 & RED_type == "REDi")
+
+p_redi_l23 <- df_redi %>%
+  ggplot(aes(x = RED)) +
+  xlim(-2,2) +
+  ylim(0,0.75) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  annotate("text", x = 0, y = 0.7, label = paste0("median = ", round(median(df_redi$RED), 2))) +
+  labs(title = "REDi - L2/3 IT", x = "REDi", y = "Density")
+
+### D. REDu distribution (L2/3 IT) --------------------------------------------
+# Same for exonic (3' UTR) events, on identical axes so C and D are directly
+# comparable.
+df_redu <- red_scores %>%
+  filter(Cells == "L2/3 IT" & abs(RED) > 0.25 & RED_LRT_padj < 0.1 & RED_type == "REDu")
+
+p_redu_l23 <- df_redu %>%
+  ggplot(aes(x = RED)) +
+  xlim(-2,2) +
+  ylim(0,0.75) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  annotate("text", x = 0, y = 0.7, label = paste0("median = ", round(median(df_redu$RED), 2))) +
+  labs(title = "REDu - L2/3 IT", x = "REDu", y = "Density")
+
+### Assemble ------------------------------------------------------------------
+( p_npas | p_redtype ) / ( p_redi_l23 | p_redu_l23) +
+  plot_annotation(tag_levels = "A")
+```
+
+
+
+------------------------------------------------------------------------
+
+# 2. Coverage visualization
+
+`PolyAPlot()` draws coverage tracks with the gene's polyA sites, peaks
+and transcript annotation. `cell_filter` selects which cells to show (a
+broad class or a list of subpopulations) and `bulk = TRUE` collapses
+them into one track; `condition` restricts the plotted region and site
+labels to one comparison, and adding `condition_group_cols` also
+restricts the coverage cells to the two groups being compared.
+
+```{r polyaplot1, fig.height=8}
+PolyAIA::PolyAPlot(
+  seu       = seurat_obj,
+  gene      = "Mapk10",
+  deg_list  = red_scores[red_scores$RED_type == "REDu",],
+  polyAdb   = polyAdb,
+  species   = "mouse",
+  version   = "mm10",
+  expand_bp = 2000,
+  polyARegion = TRUE,
+
+  cell_filter = "L2/3 IT",            # keep excitatory neurons
+  cell_order = c("L2/3 IT"),
+  bulk        = TRUE,             # ...as one combined track
+  group.by    = "Strain",
+  split.by    = "Treatment",
+
+  condition            = "B6_Alcohol_vs_B6_Control",
+  condition_group_cols = c("Strain", "Treatment")
+)
+```
+
+```{r polyaplot2, fig.height=8}
+PolyAIA::PolyAPlot(
+  seu       = seurat_obj,
+  gene      = "Akap11",
+  deg_list  = red_scores[red_scores$RED_type == "REDu",],
+  polyAdb   = polyAdb,
+  species   = "mouse",
+  version   = "mm10",
+  expand_bp = 2000,
+  polyARegion = TRUE,
+
+  cell_filter = "L2/3 IT",            # keep excitatory neurons
+  cell_order = c("L2/3 IT"),
+  bulk        = TRUE,             # ...as one combined track
+  group.by    = "Strain",
+  split.by    = "Treatment",
+
+  condition            = "3xTg_Control_vs_B6_Control",
+  condition_group_cols = c("Strain", "Treatment")
+)
+```
+
+
+```{r polyaplot3, fig.height=8}
+PolyAIA::PolyAPlot(
+  seu       = seurat_obj,
+  gene      = "Msl1",
+  deg_list  = red_scores[red_scores$RED_type == "REDu",],
+  polyAdb   = polyAdb,
+  species   = "mouse",
+  version   = "mm10",
+  expand_bp = 2000,
+  polyARegion = TRUE,
+
+  cell_filter = "L2/3 IT",            # keep excitatory neurons
+  cell_order = c("L2/3 IT"),
+  bulk        = TRUE,             # ...as one combined track
+  group.by    = "Strain",
+  split.by    = "Treatment",
+
+  condition            = "3xTg_Alcohol_vs_B6_Control",
+  condition_group_cols = c("Strain", "Treatment")
+)
+```
+
+------------------------------------------------------------------------
+
+# 3. Workflow used to generate Seurat_polyA object
+
+How the example object was built, and the QC / integration /
+visualization helpers. The steps that need the raw 10X `.h5` files, polyA
+peak counts and fragment files are shown as non-evaluated reference
+(`eval = FALSE`); the plotting sections run on the object loaded above.
+
+## 3.1 From 10X to an annotated Seurat object
+
+```{r build-part1, eval=FALSE, warning=FALSE}
+seurat_obj <- PolyAIA::UploadSce(
+  data_dir        = "../../Mice_example/2_h5_files/",
+  file_pattern    = ".h5",
+  metadata_file   = "../../Mice_example/4_MetaData/Metada_sanna.csv",
+  species         = "mouse",
+  reference       = "mousecortexref",   # Azimuth -> CellType / Subpopulation
+  column_id       = "Sample_accession",
+  genome_build    = "mm10",
+  IDtype          = "ENSEMBL",
+  remove_doublets = TRUE
+)
+```
+
+```{r build-part1b, eval=FALSE, warning=FALSE}
+# `thresholds` is the per-cell-type table defined in 3.2 below.
+seurat_obj <- PolyAIA::SeuratPipeline(seurat_obj, sample_col = "Sample")
+```
+
+------------------------------------------------------------------------
+
+## 3.2 Quality control
+
+`QCPlot()` shows the three standard metrics (`nCount_RNA`,
+`nFeature_RNA`, `percent_mito`). Passing cutoffs draws them as dashed
+reference lines, and `split_by` facets by any metadata column.
+
+```{r qc-plot, fig.height=7, fig.width=13, warning=FALSE}
+PolyAIA::QCPlot(seurat_obj, split_by = "CellType")
+```
+
+### Per-cell-type filtering
+
+RNA content differs a lot between populations — neurons carry far more
+transcripts than microglia or oligodendrocytes — so a single global
+cutoff over-filters the low-RNA types and under-filters the high-RNA
+ones. `QCFilter()` applies a **different threshold per cell type**: each
+cell is matched to its group's row and dropped only if it fails a bound
+for *its own* type. Any threshold column you omit simply isn't enforced.
+
+```{r qc-filter}
+thresholds <- data.frame(
+  CellType     = c("Astro",  "End", "Exc",  "Inh",      "Mic",  "Oligo", "OPC"),
+  min_counts   = c( 1000,     400,   2200,   1500,        250,      250,   250),
+  max_counts   = c( 5000,    5000,   9000,   9000,       5000,     5000,  5000),
+  min_features = c( 1000,     400,   2200,   1500,        250,      250,   250),
+  max_features = c( 3000,    2000,   4000,   4000,       2000,     2000,  3000),
+  mito_cutoff  = c(    3,       3,      3,      3,          3,        3,     3)
+)
+
+seurat_obj <- PolyAIA::QCFilter(seurat_obj, thresholds, group_col = "CellType")
+```
+
+```{r qc-plot2, fig.height=7, fig.width=13, warning=FALSE}
+PolyAIA::QCPlot(seurat_obj, split_by = "CellType")
+```
+
+## 3.3 Cell-type visualization
+
+```{r umap}
+PolyAIA::UmapPlot(
+  seurat_obj, "harmony",
+  color           = "CellType",
+  label_by        = "CellType",
+  show_labels     = TRUE,
+  legend.position = "right"
+)
+```
+
+`DotPlot()` converts rownames to gene symbols internally (using the
+assay's `SYMBOL` feature metadata), so it works whether the object was
+built with Ensembl IDs or symbols.
+
+```{r markers}
+Gene_type_markers <- list(
+  Astro = c("Gfap", "Aqp4", "Aldh1l1", "Gja1", "Slc1a3"),
+  Exc   = c("Slc17a7", "Satb2"),
+  Inh   = c("Gad1", "Gad2"),
+  Mic   = c("C1qa", "C1qb", "C1qc", "Csf1r", "Cx3cr1"),
+  Oligo = c("Plp1", "Mbp", "Mobp", "Mog", "Mag"),
+  OPC   = c("Pdgfra", "Cspg4", "Sox10", "Olig1", "Olig2")
+)
+
+PolyAIA::DotPlot(
+  seu       = seurat_obj,
+  group_var = "CellType",
+  features  = Gene_type_markers,
+  dot_scale = 3,
+  sizes     = c(7, 0.5, 9, 7)
+)
+```
+
+------------------------------------------------------------------------
+
+## 3.5 Building and attaching the polyA assay
+
+```{r build-part2, eval=FALSE, warning=FALSE}
+library(PASTA); library(Signac); library(EnsDb.Mmusculus.v79)
+options(Seurat.object.assay.calcn = TRUE)
+
+counts_dir <- "../../Mice_example/3_polyA_counts/"
+samples <- unique(gsub("\\.tab\\.gz$", "", list.files(counts_dir, pattern = "\\.tab\\.gz$")))
+
+# One sample at a time -- keeps peak memory low
+polyA.assays <- PolyAIA::UploadPolyAAssays(
+  samples       = samples,
+  counts_dir    = counts_dir,
+  peaks_file    = "../../Mice_example/4_MetaData/polyA_Bam_Files_polyA_peaks.gff",
+  fragments_dir = "../../Mice_example/1_Mice_bed_files.nosync/",
+  min.features  = 500,
+  min.cells     = 50,
+  genome        = "mm10"
+)
+
+# Unify peaks across samples, then requantify everyone against that set
+PeaksFiltering <- PolyAIA::FilterPeaks(polyA.assays, multiple_samples = FALSE)
+
+load("rds_files/Eviroment_seurat.RData")
+
+for (i in seq_along(polyA.assays)) {
+  cells <- intersect(colnames(seurat_obj), colnames(polyA.assays[[i]]))
+  polyA.assays[[i]] <- subset(polyA.assays[[i]], cells = cells)
+}
+
+
+polyA.unified <- PolyAIA::RequantifyPolyA(
+  polyA.assays  = polyA.assays,
+  unified.peaks = PeaksFiltering,
+  threshold     = 16,
+  genome        = "mm10"
+)
+
+rm(polyA.assays)
+
+polyA.merged <- merge(polyA.unified[[1]], polyA.unified[-1], merge.data = TRUE)
+
+rm(polyA.unified)
+
+annotations <- Signac::GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+Signac::genome(annotations) <- "mm10"
+Signac::Annotation(polyA.merged) <- annotations
+
+cells <- intersect(colnames(seurat_obj), colnames(polyA.merged))
+seurat_obj <- subset(seurat_obj, cells = cells)
+seurat_obj[["polyA"]] <- subset(polyA.merged, cells = cells)
+DefaultAssay(seurat_obj) <- "polyA"
+
+rm(polyA.merged)
+
+# Annotate sites against the polyA reference database
+seurat_obj <- PASTA::GetPolyADbAnnotation(
+  seurat_obj,
+  polyAdb.file = "../../Mice_example/4_MetaData/polyAdb_mm10.txt",
+  max.dist     = 50
+)
+
+# The example workspace bundles the object together with the RepeatMasker
+# table, so section 4 can run straight after load().
+rmsk <- read.delim("../../Mice_example/4_MetaData/mm10.rmsk.txt")
+```
+
+------------------------------------------------------------------------
+
+# Session info
+
+```{r session-info}
+sessionInfo()
+```

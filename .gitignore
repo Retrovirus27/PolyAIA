@@ -1,0 +1,42 @@
+# --- Data / results (NEVER commit: these are GB-scale) ------------------------
+rds_files/
+*.rds
+*.RData
+*.Rdata
+*.rda
+Red_scores_*.rds
+Enviroment_*.RData
+
+# Raw / reference data kept outside the package
+Mice_example/
+examples/example_data/
+*.h5
+*.tab.gz
+*.bed.gz
+*.gff
+*.rmsk.txt
+polyAdb_*.txt
+
+# --- R / RStudio session cruft ------------------------------------------------
+.Rproj.user/
+.Rhistory
+.Rapp.history
+.Ruserdata
+*.Rcheck/
+.Renviron
+.Rprofile
+
+# --- Rendered notebooks (regenerate by knitting the .Rmd) ---------------------
+# Ignored by default, EXCEPT the worked example: its rendered notebook is the
+# showcase for the package on GitHub, so it is tracked on purpose.
+*.nb.html
+!examples/PolyAIA_example.nb.html
+*_files/
+*_cache/
+
+# --- Local backups of package code (kept outside version control) -------------
+backup/
+
+# --- OS junk ------------------------------------------------------------------
+.DS_Store
+Thumbs.db

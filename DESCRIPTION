@@ -1,0 +1,73 @@
+Package: PolyAIA
+Type: Package
+Title:  PolyA Isoform Analysis
+Version: 0.1.0
+Authors@R:  c(
+    person(
+      "Yordi", "Tamayo",
+      email = "ystm0827@gmail.com",
+      role = c("aut", "cre"),
+      comment = c(ORCID = "0000-0001-9281-4121")
+    )
+  )
+Description: Tools for single-cell alternative polyadenylation (APA) analysis.
+    Provides an end-to-end workflow: loading and annotating single-cell data,
+    quality control with per-cell-type thresholds, normalization and
+    integration, building polyA site assays from peak counts, and differential
+    polyA usage analysis with RED, DPAU and gDPAU scores, plus coverage and
+    QC visualization.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.3.3
+Imports:
+    SeuratObject,
+    dplyr,
+    ggplot2,
+    ggprism,
+    ggrepel,
+    gridExtra,
+    patchwork,
+    scales,
+    scCustomize,
+    scuttle,
+    tidyr,
+    BiocGenerics,
+    methods,
+    stats,
+    utils,
+    magrittr,
+    BiocParallel,
+    colorspace,
+    viridisLite,
+    scDblFinder,
+    AnnotationDbi,
+    DropletUtils,
+    gplm,
+    GenomicRanges,
+    MGLM,
+    Seurat,
+    IRanges,
+    SummarizedExperiment,
+    Matrix,
+    S4Vectors,
+    ggh4x,
+    Homo.sapiens,
+    Mus.musculus,
+    Signac,
+    rlang,
+    tibble,
+    PASTA,
+    tidyselect,
+    EnsDb.Hsapiens.v75,
+    EnsDb.Mmusculus.v79,
+    Azimuth,
+    GenomeInfoDb,
+    EnsDb.Hsapiens.v86,
+    pbapply,
+    purrr,
+    SingleCellExperiment,
+    SingleR,
+    edgeR
+Suggests:
+    SoupX

@@ -1,0 +1,16 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+# Analysis notebooks / rendered notebooks are not part of the package
+^.*\.nb\.html$
+^rds_files$
+^Mice_example$
+^.*\.RData$
+^Red_scores_.*\.rds$
+^\.gitignore$
+^\.git$
+^\.DS_Store$
+^\.Rhistory$
+^examples$
+^README\.md$
+^backup$
+^LICENSE\.md$
