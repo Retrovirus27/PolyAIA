@@ -50,19 +50,19 @@ library(dplyr)
 The example workspace (`Seurat_PolyA.RData`) contains everything the
 walkthrough needs:
 
-| Object | What it is |
-|-------------------|-----------------------------------------------------|
+| Object         | What it is                                          |
+|----------------|-----------------------------------------------------|
 | `seurat_polyA` | Seurat object with annotated `RNA` + `polyA` assays |
-| `rmsk` | UCSC RepeatMasker track (mm10), used in section 4 |
+| `rmsk`         | UCSC RepeatMasker track (mm10), used in section 4   |
 
-It is hosted on Mendeley Data and downloaded on first run (a few GB — the
-default 60 s timeout is raised, and the file is only fetched if it isn't
-already on disk).
+It is hosted on Mendeley Data and downloaded on first run (a few GB —
+the default 60 s timeout is raised, and the file is only fetched if it
+isn't already on disk).
 
 ```{r download}
 # Direct download URL for Seurat_PolyA.RData.
 # Get it from the dataset page -> right-click the file -> "Copy link address".
-data_url  <- ""                                  # <-- paste the URL here
+data_url  <- "https://data.mendeley.com/public-files/datasets/x54sns7zs2/files/61e7c8fd-7339-4060-a333-bf928cd1985b/file_downloaded"                  
 data_file <- "rds_files/Seurat_PolyA.RData"
 
 dir.create(dirname(data_file), showWarnings = FALSE, recursive = TRUE)
@@ -85,11 +85,11 @@ annotations produced by Azimuth (`CellType` = broad class,
 `Subpopulation` = fine label) and the experimental design columns:
 
 ```{r explore}
-SeuratObject::Assays(seurat_obj)
-table(seurat_obj$CellType)
-table(seurat_obj$Strain, seurat_obj$Treatment)
+SeuratObject::Assays(seurat_polyA)
+table(seurat_polyA$CellType)
+table(seurat_polyA$Strain, seurat_polyA$Treatment)
+table(seurat_polyA@assays[["polyA"]]@meta.features$Intron.exon.location)
 ```
-
 
 ------------------------------------------------------------------------
 
@@ -132,11 +132,12 @@ comparisons
 set.seed(100)
 
 deps <- PolyAIA::DEPsMatrix(
-  seu             = seurat_obj,
+  seu             = seurat_polyA,
   comparisons     = comparisons,
-  celltype_col    = "Subpopulation",
+  genomic_positions = c("3' most exon", "Intron", "Intergenic"),
+  celltype_col    = "CellType",
   condition_cols  = c("Treatment", "Strain"),   # -> "Control_B6", "Alcohol_3xTg", ...
-  group.by        = c("Strain", "Treatment", "Subpopulation", "Number"),
+  group.by        = c("Strain", "Treatment", "CellType", "Number"),
   gene.names      = "Gene_Symbol",
 
   # Residual background: Idents built as Treatment+Strain with no separator
@@ -145,7 +146,8 @@ deps <- PolyAIA::DEPsMatrix(
   background_sep  = "",
   min.counts.background = 5,
 
-  Pasta           = FALSE,        # FALSE = skip residuals/DE, RED from counts only
+  Pasta           = TRUE,        # FALSE = skip residuals/DE, RED from counts only
+  modified_residuals = FALSE,
   min_cells       = 10,          # drop subpopulations with too few cells
   filter_method   = "edgeR",
   repeat_masker   = "Remove",    # drop intronic TE-overlapping polyA sites
@@ -188,14 +190,15 @@ red_scores %>%
   arrange(desc(abs(RED))) %>%
   select(Cells, Condition, Gene_symbol, RED, RED_Direction,
          DPAU, gDPAU, RED_LRT_padj) %>%
-  head(15)
+  head(15) 
 ```
 
 ## Summary plots
 
-A four-panel overview of the RED results: how many polyA sites the analyzed
-genes carry, how the tested pairs split between intronic (REDi) and exonic
-(REDu) events, and the direction of the significant shifts in one cell type.
+A four-panel overview of the RED results: how many polyA sites the
+analyzed genes carry, how the tested pairs split between intronic (REDi)
+and exonic (REDu) events, and the direction of the significant shifts in
+one cell type.
 
 ```{r summary-plots, fig.width=12, fig.height=9}
 library(ggplot2)
@@ -213,16 +216,16 @@ p_npas <- red_scores %>%
   ) %>%
   count(npas_bin) %>%
   ggplot(aes(x = npas_bin, y = n)) +
-  ylim(0,5000) +
+  ylim(0,750) +
   geom_col(fill = "darkorange") +
   geom_text(aes(label = n), vjust = -0.3) +
   labs(x = "poly(A) sites per gene", y = "Gene number")
 
 ### B. REDi vs REDu composition -----------------------------------------------
-# Pie chart of the tested proximal/distal pairs in L2/3 IT: REDi = the proximal
+# Pie chart of the tested proximal/distal pairs in Exc: REDi = the proximal
 # site is intronic, REDu = both sites are in the 3' most exon.
 p_redtype <- red_scores %>%
-  filter(Cells == "L2/3 IT" ) %>%
+  filter(Cells == "Exc" ) %>%
   count(RED_type) %>%
   ggplot(aes(x = "", y = n, fill = RED_type)) +
   geom_col(width = 1) +
@@ -231,41 +234,174 @@ p_redtype <- red_scores %>%
   theme_void() +
   theme(legend.position = "none")
 
-### C. REDi distribution (L2/3 IT) --------------------------------------------
+### C. REDi distribution (Exc) --------------------------------------------
 # Density of significant intronic events (|RED| > 0.25, padj < 0.1). The median
 # annotation shows whether the shift is globally towards lengthening (> 0) or
 # shortening (< 0).
 df_redi <- red_scores %>%
-  filter(Cells == "L2/3 IT" & abs(RED) > 0.25 & RED_LRT_padj < 0.1 & RED_type == "REDi")
+  filter(Cells == "Exc" & abs(RED) > 0.25 & RED_LRT_padj < 0.1 & RED_type == "REDi")
 
 p_redi_l23 <- df_redi %>%
   ggplot(aes(x = RED)) +
   xlim(-2,2) +
-  ylim(0,0.75) +
+  ylim(0,1) +
   geom_density(fill = "steelblue", alpha = 0.5) +
-  annotate("text", x = 0, y = 0.7, label = paste0("median = ", round(median(df_redi$RED), 2))) +
-  labs(title = "REDi - L2/3 IT", x = "REDi", y = "Density")
+  annotate("text", x = 0, y = 0.8, label = paste0("median = ", round(median(df_redi$RED), 2))) +
+  labs(title = "REDi - Exc", x = "REDi", y = "Density")
 
-### D. REDu distribution (L2/3 IT) --------------------------------------------
+### D. REDu distribution (Exc) --------------------------------------------
 # Same for exonic (3' UTR) events, on identical axes so C and D are directly
 # comparable.
 df_redu <- red_scores %>%
-  filter(Cells == "L2/3 IT" & abs(RED) > 0.25 & RED_LRT_padj < 0.1 & RED_type == "REDu")
+  filter(Cells == "Exc" & abs(RED) > 0.25 & RED_LRT_padj < 0.1 & RED_type == "REDu")
 
 p_redu_l23 <- df_redu %>%
   ggplot(aes(x = RED)) +
   xlim(-2,2) +
-  ylim(0,0.75) +
+  ylim(0,1) +
   geom_density(fill = "steelblue", alpha = 0.5) +
-  annotate("text", x = 0, y = 0.7, label = paste0("median = ", round(median(df_redu$RED), 2))) +
-  labs(title = "REDu - L2/3 IT", x = "REDu", y = "Density")
+  annotate("text", x = 0, y = 0.8, label = paste0("median = ", round(median(df_redu$RED), 2))) +
+  labs(title = "REDu - Exc", x = "REDu", y = "Density")
 
 ### Assemble ------------------------------------------------------------------
 ( p_npas | p_redtype ) / ( p_redi_l23 | p_redu_l23) +
   plot_annotation(tag_levels = "A")
 ```
 
+## Canonical vs. modified residuals
 
+`modified_residuals` selects which implementation computes the polyA
+residuals that the differential test runs on:
+
+-   `FALSE` (default) — `PASTA::CalcPolyAResiduals()`, the canonical
+    version;
+-   `TRUE` — this package's `CalcPolyAResidualsPolyA()`.
+
+Both write the residuals to the polyA assay's `scale.data` layer, so
+everything downstream is identical; only the PASTA statistics
+(`p_estimate_PASTA`, `PASTA_padj`, …) can differ. Re-running with the
+other implementation shows how much that choice actually moves the
+results.
+
+```{r deps-modified}
+set.seed(100)
+
+deps_mod <- PolyAIA::DEPsMatrix(
+  seu             = seurat_polyA,
+  comparisons     = comparisons,
+  genomic_positions = c("3' most exon", "Intron", "Intergenic"),
+  celltype_col    = "CellType",
+  condition_cols  = c("Treatment", "Strain"),
+  group.by        = c("Strain", "Treatment", "CellType", "Number"),
+  gene.names      = "Gene_Symbol",
+
+  background      = "ControlB6",
+  background_cols = c("Treatment", "Strain"),
+  background_sep  = "",
+  min.counts.background = 5,
+
+  Pasta              = TRUE,
+  modified_residuals = TRUE,     # <-- the only difference from the run above
+  min_cells       = 10,
+  filter_method   = "edgeR",
+  repeat_masker   = "Remove",
+  rmsk            = rmsk,
+  return_seurat   = FALSE
+)
+
+red_scores_mod <- deps_mod$red_scores
+```
+
+```{r residuals-compare, fig.height=5, fig.width=16, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# A row is one proximal/distal pair in one cell type and comparison, so
+# (Cells, Condition, p_peak, d_peak) identifies it uniquely. The pairing step
+# uses counts, not residuals, so the same pairs are expected in both runs --
+# an inner_join() therefore keeps everything they have in common and quietly
+# drops any pair that only one run produced.
+cmp_df <- dplyr::inner_join(
+  red_scores     %>% select(Cells, Condition, p_peak, d_peak,
+                            p_est_canon = p_estimate_PASTA,
+                            d_est_canon = d_estimate_PASTA,
+                            padj_canon  = PASTA_padj),
+  red_scores_mod %>% select(Cells, Condition, p_peak, d_peak,
+                            p_est_mod = p_estimate_PASTA,
+                            d_est_mod = d_estimate_PASTA,
+                            padj_mod  = PASTA_padj),
+  by = c("Cells", "Condition", "p_peak", "d_peak")
+)
+
+message(sprintf("Pairs shared by both runs: %d (canonical: %d, modified: %d)",
+                nrow(cmp_df), nrow(red_scores), nrow(red_scores_mod)))
+
+# Correlation label: Pearson measures agreement in magnitude, Spearman in rank.
+# Both are reported because they can disagree when a few pairs shift a lot.
+corr_label <- function(x, y) {
+  ok <- is.finite(x) & is.finite(y)
+  if (sum(ok) < 3) return("n < 3")
+  sprintf("r = %.3f\nrho = %.3f\nn = %d",
+          cor(x[ok], y[ok], method = "pearson"),
+          cor(x[ok], y[ok], method = "spearman"),
+          sum(ok))
+}
+
+### A. PASTA estimate, proximal site ------------------------------------------
+# Effect size for the proximal site of each pair.
+p_est <- ggplot(cmp_df, aes(x = p_est_canon, y = p_est_mod)) +
+  geom_point(alpha = 0.3, size = 0.8, colour = "steelblue") +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 1.2,
+           label = corr_label(cmp_df$p_est_canon, cmp_df$p_est_mod)) +
+  labs(title = "PASTA estimate (proximal site)",
+       x = "Canonical (PASTA)", y = "Modified")
+
+### B. PASTA estimate, distal site --------------------------------------------
+# Same for the distal site. Worth plotting separately: the residual model is
+# fitted per polyA site, so the two slots of a pair are not guaranteed to be
+# perturbed to the same degree by a change of implementation.
+d_est <- ggplot(cmp_df, aes(x = d_est_canon, y = d_est_mod)) +
+  geom_point(alpha = 0.3, size = 0.8, colour = "darkorange") +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 1.2,
+           label = corr_label(cmp_df$d_est_canon, cmp_df$d_est_mod)) +
+  labs(title = "PASTA estimate (distal site)",
+       x = "Canonical (PASTA)", y = "Modified")
+
+### C. Adjusted p-value -------------------------------------------------------
+# On -log10 scale, so the significant end of the range is the readable one.
+# Zero p-values would become Inf, so they are floored at the smallest
+# non-zero value present.
+floor_p <- function(p) {
+  nz <- p[is.finite(p) & p > 0]
+  pmax(p, if (length(nz)) min(nz) else .Machine$double.xmin)
+}
+
+cmp_padj <- cmp_df %>%
+  filter(is.finite(padj_canon), is.finite(padj_mod)) %>%
+  mutate(lp_canon = -log10(floor_p(padj_canon)),
+         lp_mod   = -log10(floor_p(padj_mod)))
+
+p_padj <- ggplot(cmp_padj, aes(x = lp_canon, y = lp_mod)) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dotted", colour = "firebrick") +
+  geom_vline(xintercept = -log10(0.05), linetype = "dotted", colour = "firebrick") +
+  geom_point(alpha = 0.3, size = 0.8, colour = "seagreen") +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 1.2,
+           label = corr_label(cmp_padj$lp_canon, cmp_padj$lp_mod)) +
+  labs(title = "Adjusted p-value",
+       x = expression(-log[10]~"padj, canonical"),
+       y = expression(-log[10]~"padj, modified"))
+
+p_est | d_est | p_padj
+```
+
+How often the two implementations agree on significance at padj \< 0.05
+— the off-diagonal cells are the pairs whose call changes:
+
+```{r residuals-agreement}
+table(canonical = cmp_padj$padj_canon < 0.05,
+      modified  = cmp_padj$padj_mod   < 0.05)
+```
 
 ------------------------------------------------------------------------
 
@@ -280,7 +416,7 @@ restricts the coverage cells to the two groups being compared.
 
 ```{r polyaplot1, fig.height=8}
 PolyAIA::PolyAPlot(
-  seu       = seurat_obj,
+  seu       = seurat_polyA,
   gene      = "Mapk10",
   deg_list  = red_scores[red_scores$RED_type == "REDu",],
   polyAdb   = polyAdb,
@@ -302,7 +438,7 @@ PolyAIA::PolyAPlot(
 
 ```{r polyaplot2, fig.height=8}
 PolyAIA::PolyAPlot(
-  seu       = seurat_obj,
+  seu       = seurat_polyA,
   gene      = "Akap11",
   deg_list  = red_scores[red_scores$RED_type == "REDu",],
   polyAdb   = polyAdb,
@@ -322,10 +458,9 @@ PolyAIA::PolyAPlot(
 )
 ```
 
-
 ```{r polyaplot3, fig.height=8}
 PolyAIA::PolyAPlot(
-  seu       = seurat_obj,
+  seu       = seurat_polyA,
   gene      = "Msl1",
   deg_list  = red_scores[red_scores$RED_type == "REDu",],
   polyAdb   = polyAdb,
@@ -350,9 +485,10 @@ PolyAIA::PolyAPlot(
 # 3. Workflow used to generate Seurat_polyA object
 
 How the example object was built, and the QC / integration /
-visualization helpers. The steps that need the raw 10X `.h5` files, polyA
-peak counts and fragment files are shown as non-evaluated reference
-(`eval = FALSE`); the plotting sections run on the object loaded above.
+visualization helpers. The steps that need the raw 10X `.h5` files,
+polyA peak counts and fragment files are shown as non-evaluated
+reference (`eval = FALSE`); the plotting sections run on the object
+loaded above.
 
 ## 3.1 From 10X to an annotated Seurat object
 

@@ -8,6 +8,8 @@ utils::globalVariables(c(
   "RED_LRT_pval", "RED_LRT_padj",
   "RED_LRT_cov_pval", "RED_LRT_cov_padj",
   "gDPAU", "DPAU",
+  # RED pair-type assignment (R/3_PolyAAnalysis.R)
+  "RED_type", "p_region", "d_region",
   # ClusterPlots elbow/variance plots (R/2_ScePlots.R)
   "PC", "Stdev", "CumulativeStdev", "color",
   # plot_annotation_from_granges gene track (R/3_PolyAAnalysis.R)

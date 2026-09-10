@@ -1399,7 +1399,7 @@ DEPolyAPeaks <- function(
   ident_1 <- paste0(celltype, "_", ident1)
   ident_2 <- paste0(celltype, "_", ident2)
 
-  if (verbose) message("Running DEGs for: ", ident_1, " vs ", ident_2)
+  if (verbose) message("Running DEPs for: ", ident_1, " vs ", ident_2)
 
   # Run differential expression test
   if (!requireNamespace("PASTA", quietly = TRUE)) {
@@ -1430,7 +1430,7 @@ DEPolyAPeaks <- function(
 #' Joins a \code{DEPolyAPeaks()} result table (per cell type) with the polyA
 #' assay's peak metadata (\code{meta.features}) and the RNA assay's gene
 #' metadata, then stamps a \code{Condition} label and de-duplicates by peak.
-#' Internal helper for \code{DEPsMatrix()}; mirrors the "Merge DEGs with
+#' Internal helper for \code{DEPsMatrix()}; mirrors the "Merge DEPs with
 #' metadata" step previously written inline in the analysis scripts.
 #'
 #' @param deg_df A per-cell-type \code{DEPolyAPeaks()} result (must contain a
@@ -1578,6 +1578,12 @@ DEPolyAPeaks <- function(
 #' @param background_sep Separator for \code{background_cols}. Default \code{""}
 #'   (e.g. \code{Treatment}+\code{Strain} -> \code{"ControlB6"}).
 #' @param min.counts.background Passed to \code{CalcPolyAResiduals()}. Default 5.
+#' @param modified_residuals Logical. Which residual implementation to use when
+#'   \code{Pasta = TRUE}. \code{FALSE} (default) uses the canonical
+#'   \code{PASTA::CalcPolyAResiduals()}; \code{TRUE} uses this package's
+#'   modified \code{\link{CalcPolyAResidualsPolyA}}. Both write the residuals
+#'   to the polyA assay's \code{"scale.data"} layer, so the rest of the
+#'   pipeline is identical. Ignored when \code{Pasta = FALSE}.
 #' @param Pasta Logical. If \code{TRUE} (default), run PASTA residuals +
 #'   differential testing; if \code{FALSE}, skip both and compute RED from
 #'   counts only (PASTA stat columns are \code{NA}).
@@ -1707,6 +1713,7 @@ DEPsMatrix <- function(
     background_sep      = "",
     min.counts.background = 5,
     Pasta               = TRUE,
+    modified_residuals  = FALSE,
     de_features         = NULL,
     min_cells           = 10,
     filter_method       = "edgeR",
@@ -1856,8 +1863,22 @@ DEPsMatrix <- function(
     if (!requireNamespace("PASTA", quietly = TRUE)) {
       stop("Package 'PASTA' is required when Pasta = TRUE.")
     }
-    if (verbose) message("Calculating polyA residuals (PASTA::CalcPolyAResiduals)...")
-    seu <- PASTA::CalcPolyAResiduals(
+    # Residuals: PASTA's canonical implementation by default, or this package's
+    # modified one when `modified_residuals = TRUE`. Both take the same
+    # arguments and both return a Seurat object carrying the residuals in the
+    # polyA assay's "scale.data" layer, so everything downstream is unchanged.
+    .calc_residuals <- if (isTRUE(modified_residuals)) {
+      CalcPolyAResidualsPolyA
+    } else {
+      PASTA::CalcPolyAResiduals
+    }
+    if (verbose) {
+      message("Calculating polyA residuals (",
+              if (isTRUE(modified_residuals)) "CalcPolyAResidualsPolyA, modified"
+              else "PASTA::CalcPolyAResiduals",
+              ")...")
+    }
+    seu <- .calc_residuals(
       seu,
       assay                 = assay,
       features              = features,
@@ -2091,6 +2112,16 @@ DEPsMatrix <- function(
   # types silently disappear from the result).
   block_fail  <- character(0)
   block_empty <- character(0)
+
+  # Report the actual amount of work rather than a vague warning: the run time
+  # scales with (cell types x comparisons), so this tells the user what to
+  # expect and makes a surprising block count obvious up front.
+  if (verbose) {
+    message(sprintf(
+      "Calculating RED scores: %d cell type(s) x %d comparison(s) = %d block(s). This may take a while...",
+      length(celltypes_red), nrow(comparisons),
+      length(celltypes_red) * nrow(comparisons)))
+  }
 
   results <- lapply(seq_len(nrow(comparisons)), function(ci) {
     cmp <- comparisons[ci, ]

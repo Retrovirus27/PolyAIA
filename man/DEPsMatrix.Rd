@@ -19,6 +19,7 @@ DEPsMatrix(
   background_sep = "",
   min.counts.background = 5,
   Pasta = TRUE,
+  modified_residuals = FALSE,
   de_features = NULL,
   min_cells = 10,
   filter_method = "edgeR",
@@ -95,6 +96,13 @@ step. If \code{NULL}, the object's current \code{Idents} are used as-is.}
 \item{Pasta}{Logical. If \code{TRUE} (default), run PASTA residuals +
 differential testing; if \code{FALSE}, skip both and compute RED from
 counts only (PASTA stat columns are \code{NA}).}
+
+\item{modified_residuals}{Logical. Which residual implementation to use when
+\code{Pasta = TRUE}. \code{FALSE} (default) uses the canonical
+\code{PASTA::CalcPolyAResiduals()}; \code{TRUE} uses this package's
+modified \code{\link{CalcPolyAResidualsPolyA}}. Both write the residuals
+to the polyA assay's \code{"scale.data"} layer, so the rest of the
+pipeline is identical. Ignored when \code{Pasta = FALSE}.}
 
 \item{de_features}{Optional features passed to \code{DEPolyAPeaks()} for the
 differential test. Default \code{NULL} = test every peak that has a
