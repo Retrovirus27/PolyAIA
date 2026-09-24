@@ -23,7 +23,9 @@ A named \code{list} with one element:
     \item{\code{lrt_pval}}{P-value from the likelihood ratio test comparing
       a binomial GLM with condition as a predictor against the null model.
       Returns \code{NA_real_} if there are fewer than 2 usable replicates
-      total, if all counts are zero, or if model fitting errors/warns}
+      total, if all counts are zero, or if model fitting errors. Fitting
+      warnings (e.g. fitted probabilities 0/1 for very strong changes) are
+      muffled and the p-value is kept}
   }
 }
 \description{

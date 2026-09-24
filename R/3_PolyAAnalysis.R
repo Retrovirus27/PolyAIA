@@ -1643,6 +1643,29 @@ DEPolyAPeaks <- function(
 #'   columns are \code{NA} by construction, and \code{RED_LRT_cov_*} is
 #'   \code{NA} without a \code{covariate_formula}. Default \code{TRUE}; set
 #'   \code{FALSE} to keep a fixed column layout.
+#' @param pair_rule How the proximal/distal pair of each gene is chosen, per
+#'   RED type. \code{"max"} (default): the pair with the largest combined
+#'   change in proportion between treatment and control. \code{"top"}: the
+#'   most-used sites from pooled treatment + control reads of the comparison
+#'   (REDu: the two most-used 3'-most-exon sites; REDi: the most-used intronic
+#'   site and the most-used 3'-most-exon site downstream of it), which does not
+#'   depend on the treatment-vs-control difference.
+#' @param exclude_peaks Logical. Remove "phantom" peaks (counts in the matrix
+#'   but no reads in their window of the fragment files; see
+#'   \code{PeakAudit()}) before pairing. Default \code{FALSE}.
+#' @param peak_audit Optional output of \code{PeakAudit()} to reuse. If
+#'   \code{NULL} and \code{exclude_peaks = TRUE}, it is computed (slow).
+#' @param phantom_min_counts,phantom_max_ratio Passed to \code{PeakAudit()}
+#'   when it is computed here. Defaults \code{50} and \code{0.1}.
+#' @param min_site_reads Minimum mean reads per replicate of EACH site of the
+#'   pair in EACH group for \code{ok_reads}. Default \code{10}.
+#' @param min_site_usage Minimum share of the gene's pooled reads of each site
+#'   of the pair for \code{ok_usage}. Default \code{0.05}.
+#' @param min_rep_pairs Minimum \code{rep_pairs_frac} for \code{ok_replicates}.
+#'   Default \code{0.9}.
+#' @param return_filter Logical. Also return \code{$filter}: per (cell type x
+#'   comparison) the number of peaks before/after the peak filter
+#'   (\code{$summary}) and the kept peaks (\code{$kept}). Default \code{FALSE}.
 #' @param return_seurat Logical. The result is always a list with
 #'   \code{$red_scores} and \code{$polyAdb} (see \strong{Value}). If
 #'   \code{TRUE}, the list additionally includes \code{$seu} -- the
@@ -1662,12 +1685,22 @@ DEPolyAPeaks <- function(
 #'   gene's sites; equals DPAU when \eqn{n=2}). A group with fewer than
 #'   \code{gdpau_min_reads} supporting reads gives \code{NA}.
 #'
+#'   Quantifiability of each pair: \code{p_/d_reads_control},
+#'   \code{p_/d_reads_treatment} (mean reads per replicate), \code{p_/d_usage}
+#'   (share of the gene's pooled reads), \code{rep_pairs_frac} (fraction of
+#'   treatment-vs-control replicate match-ups, e.g. 4 x 4 = 16, in which the
+#'   treated \eqn{\log_2(d/p)} lies in the direction of RED; 1 = complete
+#'   separation), the flags \code{ok_reads}, \code{ok_usage},
+#'   \code{ok_replicates}, and \code{quantifiable} (all three \code{TRUE}).
+#'
 #'   Always returns a \strong{list}: \code{$red_scores} (the RED table above,
 #'   suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb} (the
 #'   analyzed peak-level table -- one row per peak, TE handling applied, with a
 #'   \code{Repeated_Masker} flag -- suitable as \code{PolyAPlot()}'s
 #'   \code{polyAdb}). With \code{return_seurat = TRUE} the list also has
-#'   \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object.
+#'   \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object;
+#'   with \code{exclude_peaks = TRUE}, \code{$peak_audit}; with
+#'   \code{return_filter = TRUE}, \code{$filter}.
 #'
 #' @examples
 #' \dontrun{
@@ -1731,12 +1764,22 @@ DEPsMatrix <- function(
     rmsk                = NULL,
     repeat_masker_positions = "Intron",
     drop_na_cols        = TRUE,
+    pair_rule           = c("max", "top"),
+    exclude_peaks       = FALSE,
+    peak_audit          = NULL,
+    phantom_min_counts  = 50,
+    phantom_max_ratio   = 0.1,
+    min_site_reads      = 10,
+    min_site_usage      = 0.05,
+    min_rep_pairs       = 0.9,
+    return_filter       = FALSE,
     return_seurat       = FALSE,
     verbose             = TRUE
 ) {
 
   # ---- Validation -----------------------------------------------------------
   repeat_masker <- match.arg(repeat_masker)
+  pair_rule     <- match.arg(pair_rule)
   if (!methods::is(seu, "Seurat")) stop("`seu` must be a Seurat object.")
   if (repeat_masker != "none" && is.null(rmsk)) {
     stop("`rmsk` (a RepeatMasker table with genoName/genoStart/genoEnd/strand ",
@@ -2082,6 +2125,30 @@ DEPsMatrix <- function(
     te_peaks_all <- te_peaks
   }
 
+  # ---- Exclude peaks without fragment support ("phantom") -----------------
+  # A peak with counts in the matrix but (almost) no reads in its own window
+  # of the fragment files cannot be trusted (see PeakAudit()). Applied, like
+  # the TE filter, after residuals/differential testing and before pairing.
+  if (isTRUE(exclude_peaks)) {
+    if (is.null(peak_audit)) {
+      peak_audit <- PeakAudit(seu, peaks = unique(Peaks_all$peak), assay = assay,
+                              phantom_min_counts = phantom_min_counts,
+                              phantom_max_ratio  = phantom_max_ratio,
+                              verbose = verbose)
+    }
+    if (!all(c("peak", "phantom") %in% colnames(peak_audit))) {
+      stop("`peak_audit` must be the output of PeakAudit() (columns `peak`, `phantom`).")
+    }
+    bad_peaks <- peak_audit$peak[peak_audit$phantom %in% TRUE]
+    n_bad <- length(intersect(unique(Peaks_all$peak), bad_peaks))
+    Peaks_all <- Peaks_all[!(Peaks_all$peak %in% bad_peaks), , drop = FALSE]
+    if (verbose) {
+      message("exclude_peaks: removed ", n_bad,
+              " peak(s) with counts but no fragment support.")
+    }
+    if (nrow(Peaks_all) == 0) stop("All peaks were removed by exclude_peaks.")
+  }
+
   # Sanitize cell-type labels with the SAME transform R applies to the
   # pseudobulk column names (as.data.frame() -> make.names()), so treatment/
   # control prefixes match the pseudobulk columns regardless of whether the
@@ -2112,6 +2179,7 @@ DEPsMatrix <- function(
   # types silently disappear from the result).
   block_fail  <- character(0)
   block_empty <- character(0)
+  block_filter <- list()   # per-block peak filter outcome (return_filter)
 
   # Report the actual amount of work rather than a vague warning: the run time
   # scales with (cell types x comparisons), so this tells the user what to
@@ -2144,7 +2212,11 @@ DEPsMatrix <- function(
           mincounts         = mincounts,
           sample_metadata   = sample_metadata,
           covariate_formula = covariate_formula,
-          gdpau_min_reads   = gdpau_min_reads
+          gdpau_min_reads   = gdpau_min_reads,
+          pair_rule         = pair_rule,
+          min_site_reads    = min_site_reads,
+          min_site_usage    = min_site_usage,
+          min_rep_pairs     = min_rep_pairs
         ),
         error = function(e) {
           block_fail <<- c(block_fail,
@@ -2152,6 +2224,14 @@ DEPsMatrix <- function(
                                   conditionMessage(e)))
           NULL
         }
+      )
+      fi <- if (!is.null(red)) attr(red, "red_filter") else NULL
+      block_filter[[length(block_filter) + 1]] <<- list(
+        Cells = canonical_by_san[[ct]], Condition = cmp$Condition,
+        status = if (is.null(red)) "error" else if (nrow(red) == 0) "empty" else "ok",
+        n_peaks = if (is.null(fi)) NA_integer_ else fi$n_peaks,
+        n_kept  = if (is.null(fi)) NA_integer_ else fi$n_kept,
+        kept    = if (is.null(fi)) character(0) else fi$kept
       )
       if (is.null(red)) return(NULL)
       if (nrow(red) == 0) {
@@ -2250,10 +2330,116 @@ DEPsMatrix <- function(
   # peak, TE handling applied) is available regardless of `return_seurat`.
   # `return_seurat = TRUE` additionally includes the (residual-bearing, when
   # Pasta = TRUE) Seurat object for PolyAPlot() coverage tracks.
-  if (isTRUE(return_seurat)) {
-    return(list(red_scores = out, seu = seu, polyAdb = polyAdb))
+  res <- list(red_scores = out, polyAdb = polyAdb)
+  if (isTRUE(return_seurat)) res$seu <- seu
+
+  # Peak audit used for exclude_peaks (reuse it via `peak_audit =` next run).
+  if (isTRUE(exclude_peaks)) res$peak_audit <- peak_audit
+
+  # Per-block peak filter: how many peaks each (cell type x comparison) had
+  # before/after filterByExpr (or the manual filter), and which were kept.
+  if (isTRUE(return_filter)) {
+    res$filter <- list(
+      summary = dplyr::bind_rows(lapply(block_filter, function(b)
+        tibble::tibble(Cells = b$Cells, Condition = b$Condition, status = b$status,
+                       n_peaks = b$n_peaks, n_kept = b$n_kept))),
+      kept = dplyr::bind_rows(lapply(block_filter, function(b)
+        if (length(b$kept)) tibble::tibble(Cells = b$Cells, Condition = b$Condition,
+                                           peak = b$kept)))
+    )
   }
-  list(red_scores = out, polyAdb = polyAdb)
+  res
+}
+
+#' Audit polyA peaks against their fragment-file support
+#'
+#' Compares, for every peak, the counts in the polyA count matrix with the
+#' number of fragment-file reads that fall in the peak's own window. A peak is
+#' flagged \code{phantom} when it has at least \code{phantom_min_counts} counts
+#' but fewer than \code{phantom_max_ratio} times as many fragment reads (e.g. a
+#' site with thousands of counts and 0 reads in its window). Such peaks cannot
+#' be trusted for site-usage analysis; \code{DEPsMatrix(exclude_peaks = TRUE)}
+#' removes them.
+#'
+#' Fragment files carry no strand, so peaks that overlap a peak on the opposite
+#' strand are flagged separately (\code{ambiguous_strand}): their fragment
+#' support cannot be attributed to one strand. Fragment reads are not
+#' UMI-deduplicated, so \code{ratio} is a support check, not a quantification.
+#'
+#' Counting fragments over many peaks takes a few minutes: compute the audit
+#' once and pass it to \code{DEPsMatrix(peak_audit = ...)}.
+#'
+#' @param seu Seurat object with a polyA assay that has fragment files attached.
+#' @param peaks Peaks to audit (rownames of the assay). \code{NULL} = all.
+#' @param assay PolyA assay name. Default \code{"polyA"}.
+#' @param phantom_min_counts Minimum matrix counts for a peak to be judged.
+#'   Default \code{50}.
+#' @param phantom_max_ratio A peak is \code{phantom} when
+#'   \code{frags / counts} is below this. Default \code{0.1}.
+#' @param verbose Logical. Print progress messages. Default \code{TRUE}.
+#'
+#' @return A \code{data.frame} with one row per peak: \code{peak},
+#'   \code{counts} (matrix), \code{frags} (fragment reads in the window),
+#'   \code{ratio}, \code{phantom}, \code{ambiguous_strand}.
+#'
+#' @examples
+#' \dontrun{
+#' audit <- PeakAudit(seu)
+#' table(audit$phantom)
+#' res <- DEPsMatrix(seu, ..., exclude_peaks = TRUE, peak_audit = audit)
+#' }
+#'
+#' @export
+PeakAudit <- function(seu,
+                      peaks              = NULL,
+                      assay              = "polyA",
+                      phantom_min_counts = 50,
+                      phantom_max_ratio  = 0.1,
+                      verbose            = TRUE) {
+  if (!assay %in% SeuratObject::Assays(seu)) stop("Assay '", assay, "' not found in `seu`.")
+  if (!length(Signac::Fragments(seu[[assay]]))) {
+    stop("Assay '", assay, "' has no fragment files attached.")
+  }
+  mf <- seu[[assay]]@meta.features
+  if (is.null(peaks)) peaks <- rownames(mf)
+  peaks <- intersect(peaks, rownames(mf))
+  if (!length(peaks)) stop("None of `peaks` are features of assay '", assay, "'.")
+
+  if (verbose) message("Peak audit: counting fragments in ", length(peaks),
+                       " peak windows (this can take a few minutes)...")
+  gr <- Signac::StringToGRanges(peaks, sep = c("-", "-"))
+  fm <- Signac::FeatureMatrix(fragments = Signac::Fragments(seu[[assay]]),
+                              features = gr, cells = colnames(seu), verbose = FALSE)
+  frag_n <- Matrix::rowSums(fm)
+  names(frag_n) <- rownames(fm)
+
+  cm <- SeuratObject::LayerData(seu, assay = assay, layer = "counts")[peaks, , drop = FALSE]
+
+  # opposite-strand overlaps among all peaks of the assay
+  mf_gr <- GenomicRanges::makeGRangesFromDataFrame(
+    mf, seqnames.field = "seqnames", start.field = "start", end.field = "end",
+    strand.field = "strand", keep.extra.columns = FALSE)
+  names(mf_gr) <- rownames(mf)
+  ov <- GenomicRanges::findOverlaps(mf_gr, mf_gr, ignore.strand = TRUE)
+  q  <- S4Vectors::queryHits(ov)
+  s  <- S4Vectors::subjectHits(ov)
+  st <- as.character(GenomicRanges::strand(mf_gr))
+  opp <- unique(names(mf_gr)[q[st[q] != st[s]]])
+
+  audit <- data.frame(
+    peak   = peaks,
+    counts = unname(Matrix::rowSums(cm)),
+    frags  = unname(frag_n[peaks]),
+    stringsAsFactors = FALSE
+  )
+  audit$frags[is.na(audit$frags)] <- 0
+  audit$ratio            <- audit$frags / pmax(audit$counts, 1)
+  audit$phantom          <- audit$counts >= phantom_min_counts & audit$ratio < phantom_max_ratio
+  audit$ambiguous_strand <- audit$peak %in% opp
+
+  if (verbose) message("Peak audit: ", sum(audit$phantom), " phantom, ",
+                       sum(audit$ambiguous_strand), " ambiguous-strand peak(s).")
+  audit
 }
 
 #' Compute RED scores for a single cell type / comparison (internal RED core)
@@ -2355,8 +2541,14 @@ DEPsMatrix <- function(
     sample_metadata   = NULL,
     covariate_formula = NULL,
     gdpau_min_reads   = 5,
+    pair_rule         = c("max", "top"),
+    min_site_reads    = 10,
+    min_site_usage    = 0.05,
+    min_rep_pairs     = 0.9,
     verbose           = FALSE
 ) {
+
+  pair_rule <- match.arg(pair_rule)
 
   # --- Input validation ---
   # Note: the input column is "ensembl_gene_id" (lowercase, as produced by
@@ -2489,6 +2681,12 @@ DEPsMatrix <- function(
 
   PolyA_DEP <- PolyA_DEP[keep, ]
 
+  # Record the block's filter outcome on every returned object (read by
+  # DEPsMatrix(return_filter = TRUE)).
+  filter_info <- list(n_peaks = nrow(count_mat), n_kept = sum(keep),
+                      kept = rownames(PolyA_DEP))
+  .with_filter <- function(x) { attr(x, "red_filter") <- filter_info; x }
+
   # Drop peaks with no usable gene id BEFORE splitting. split() would otherwise
   # create a group named "" (or drop NA rows), and R's `[[` never matches an
   # empty or NA name -- so data_list[[""]] returns NULL and the per-gene
@@ -2503,7 +2701,7 @@ DEPsMatrix <- function(
                     n_pre_gene - nrow(PolyA_DEP)))
   }
   if (nrow(PolyA_DEP) == 0) {
-    return(tibble::tibble())
+    return(.with_filter(tibble::tibble()))
   }
 
   # Split by ensembl_gene_id rather than gene symbol: symbols can be
@@ -2783,10 +2981,46 @@ DEPsMatrix <- function(
     pairwise_comparisons <- pairwise_comparisons %>%
       dplyr::mutate( RED_type = dplyr::if_else( p_region == "Intron", "REDi", "REDu") )
 
-    pairwise_comparisons <- pairwise_comparisons %>%
-      dplyr::group_by(Ensembl_ID, RED_type) %>%
-      dplyr::slice_max(p_percent_change + d_percent_change, n = 1, with_ties = FALSE) %>%
-      dplyr::ungroup()
+    # Pooled (treatment + control) reads per site: label-free site usage, used
+    # by pair_rule = "top" and by the quantifiability columns below.
+    site_use <- rowSums(as.matrix(gene_processed[, c(trt_count_cols_g, ctrl_count_cols_g),
+                                                 drop = FALSE]), na.rm = TRUE)
+
+    if (pair_rule == "max") {
+      # One pair per RED type: the one with the largest combined change in
+      # proportion between treatment and control (original behaviour).
+      pairwise_comparisons <- pairwise_comparisons %>%
+        dplyr::group_by(Ensembl_ID, RED_type) %>%
+        dplyr::slice_max(p_percent_change + d_percent_change, n = 1, with_ties = FALSE) %>%
+        dplyr::ungroup()
+    } else {
+      # "top": the most-used sites, chosen from pooled treatment + control
+      # reads (independent of the treatment-vs-control difference).
+      #   REDu: the two most-used 3'-most-exon sites (ordered 5' -> 3').
+      #   REDi: the most-used intronic site + the most-used 3'-most-exon site
+      #         downstream of it.
+      loc <- gene_processed$Intron.exon.location
+      ex  <- which(loc == "3' most exon" & site_use > 0)
+      it  <- which(loc == "Intron"       & site_use > 0)
+      top_pairs <- list()
+      if (length(ex) >= 2) {
+        u <- sort(ex[order(-site_use[ex])][1:2])
+        top_pairs$u <- data.frame(p_site_id = gene_processed$site_id[u[1]],
+                                  d_site_id = gene_processed$site_id[u[2]])
+      }
+      if (length(it) >= 1) {
+        pi_ <- it[which.max(site_use[it])]
+        dc  <- ex[ex > pi_]
+        if (length(dc) >= 1) {
+          top_pairs$i <- data.frame(p_site_id = gene_processed$site_id[pi_],
+                                    d_site_id = gene_processed$site_id[dc[which.max(site_use[dc])]])
+        }
+      }
+      if (length(top_pairs) == 0) return(NULL)
+      pairwise_comparisons <- pairwise_comparisons %>%
+        dplyr::semi_join(dplyr::bind_rows(top_pairs), by = c("p_site_id", "d_site_id"))
+      if (nrow(pairwise_comparisons) == 0) return(NULL)
+    }
 
     pairwise_comparisons <- pairwise_comparisons %>%
       dplyr::mutate( RED = log2(d_treatment_prop/p_treatment_prop) - log2(d_control_prop/p_control_prop),
@@ -2835,6 +3069,45 @@ DEPsMatrix <- function(
                        numeric(1))
       )
 
+    # --- Quantifiability of the pair ----------------------------------------
+    # (a) reads: mean reads per replicate of EACH site in EACH group
+    # (b) usage: each site's share of the gene's pooled (treatment + control)
+    #     reads over the retained sites -- label-free
+    # (c) replicate separation: every treatment replicate against every
+    #     control replicate (e.g. 4 x 4 = 16 match-ups); fraction of match-ups
+    #     where the treated log2(d/p) lies in the direction of RED. 1 = complete
+    #     separation; one or two atypical replicates lower it.
+    cm_trt  <- as.matrix(gene_processed[, trt_count_cols_g,  drop = FALSE])
+    cm_ctrl <- as.matrix(gene_processed[, ctrl_count_cols_g, drop = FALSE])
+    gene_tot <- sum(site_use)
+    lr <- function(d, p) log2((d + 0.5) / (p + 0.5))
+    q <- lapply(seq_len(nrow(pairwise_comparisons)), function(i) {
+      pr <- which(gene_processed$site_id == pairwise_comparisons$p_site_id[i])
+      dr <- which(gene_processed$site_id == pairwise_comparisons$d_site_id[i])
+      red_i <- pairwise_comparisons$RED[i]
+      trt_lr  <- lr(cm_trt[dr, ],  cm_trt[pr, ])
+      ctrl_lr <- lr(cm_ctrl[dr, ], cm_ctrl[pr, ])
+      sep <- if (is.na(red_i) || red_i == 0) NA_real_ else
+        mean(sign(outer(trt_lr, ctrl_lr, "-")) == sign(red_i))
+      data.frame(
+        p_reads_treatment = mean(cm_trt[pr, ],  na.rm = TRUE),
+        p_reads_control   = mean(cm_ctrl[pr, ], na.rm = TRUE),
+        d_reads_treatment = mean(cm_trt[dr, ],  na.rm = TRUE),
+        d_reads_control   = mean(cm_ctrl[dr, ], na.rm = TRUE),
+        p_usage           = if (gene_tot > 0) site_use[pr] / gene_tot else NA_real_,
+        d_usage           = if (gene_tot > 0) site_use[dr] / gene_tot else NA_real_,
+        rep_pairs_frac    = round(sep, 3)
+      )
+    })
+    pairwise_comparisons <- dplyr::bind_cols(pairwise_comparisons, dplyr::bind_rows(q)) %>%
+      dplyr::mutate(
+        ok_reads      = (pmin(p_reads_treatment, p_reads_control,
+                              d_reads_treatment, d_reads_control) >= min_site_reads) %in% TRUE,
+        ok_usage      = (pmin(p_usage, d_usage) >= min_site_usage) %in% TRUE,
+        ok_replicates = (rep_pairs_frac >= min_rep_pairs) %in% TRUE,
+        quantifiable  = ok_reads & ok_usage & ok_replicates
+      )
+
     return(pairwise_comparisons)
   })
 
@@ -2844,7 +3117,7 @@ DEPsMatrix <- function(
   if (length(Matrix) == 0) {
     warning("No valid gene-level results for CellType = '", CellType,
             "'. This CellType may have too few peaks/samples after filtering. Returning empty tibble.")
-    return(tibble::tibble())
+    return(.with_filter(tibble::tibble()))
   }
 
   Matrix <- Matrix %>%
@@ -2879,6 +3152,11 @@ DEPsMatrix <- function(
       RED_LRT_cov_pval, RED_LRT_cov_padj,
       PASTA_pval,       PASTA_padj,
       Condition,
+      dplyr::any_of(c("quantifiable", "ok_reads", "ok_usage", "ok_replicates",
+                      "rep_pairs_frac",
+                      "p_reads_control", "p_reads_treatment",
+                      "d_reads_control", "d_reads_treatment",
+                      "p_usage", "d_usage")),
       p_site_id, d_site_id,
       p_peak, d_peak,
       p_pos, d_pos,
@@ -2899,7 +3177,7 @@ DEPsMatrix <- function(
       #dplyr::all_of(d_nread_ctrl_cols)
     )
 
-  return(Matrix)
+  return(.with_filter(Matrix))
 }
 
 
@@ -3021,19 +3299,21 @@ compute_statistics_LRT_cov <- function(p_idx, d_idx, gene_processed,
       full_f <- stats::as.formula(paste("cbind(d_count, p_count) ~ condition +", covariate_formula))
       null_f <- stats::as.formula(paste("cbind(d_count, p_count) ~",            covariate_formula))
 
-      fit_full <- stats::glm(full_f, data = df, family = stats::binomial())
-      fit_null <- stats::glm(null_f, data = df, family = stats::binomial())
+      # glm warnings (e.g. "fitted probabilities numerically 0 or 1", typical
+      # of very strong usage changes) are muffled instead of turning the
+      # p-value into NA -- that silently dropped some of the strongest events.
+      fit_full <- suppressWarnings(stats::glm(full_f, data = df, family = stats::binomial()))
+      fit_null <- suppressWarnings(stats::glm(null_f, data = df, family = stats::binomial()))
 
       if (!fit_full$converged || !fit_null$converged) {
         NA_real_
       } else {
-        lrt <- stats::anova(fit_null, fit_full, test = "LRT")
+        lrt <- suppressWarnings(stats::anova(fit_null, fit_full, test = "LRT"))
         lrt[["Pr(>Chi)"]][2]
       }
     }
   },
-  error   = function(e) NA_real_,
-  warning = function(w) NA_real_
+  error   = function(e) NA_real_
   )
 
   return(list(lrt_pval = lrt_pval))
@@ -3062,7 +3342,9 @@ compute_statistics_LRT_cov <- function(p_idx, d_idx, gene_processed,
 #'     \item{\code{lrt_pval}}{P-value from the likelihood ratio test comparing
 #'       a binomial GLM with condition as a predictor against the null model.
 #'       Returns \code{NA_real_} if there are fewer than 2 usable replicates
-#'       total, if all counts are zero, or if model fitting errors/warns}
+#'       total, if all counts are zero, or if model fitting errors. Fitting
+#'       warnings (e.g. fitted probabilities 0/1 for very strong changes) are
+#'       muffled and the p-value is kept}
 #'   }
 #'
 #' @keywords internal
@@ -3092,23 +3374,25 @@ compute_statistics_LRT <- function(p_idx, d_idx, gene_processed) {
     if (nrow(df) < 2 || length(unique(df$condition)) < 2) {
       NA_real_
     } else {
-      fit_full <- stats::glm(
+      # glm warnings (e.g. "fitted probabilities numerically 0 or 1", typical
+      # of very strong usage changes) are muffled instead of turning the
+      # p-value into NA -- that silently dropped some of the strongest events.
+      fit_full <- suppressWarnings(stats::glm(
         cbind(d_count, p_count) ~ condition,
         data   = df,
         family = stats::binomial()
-      )
-      fit_null <- stats::glm(
+      ))
+      fit_null <- suppressWarnings(stats::glm(
         cbind(d_count, p_count) ~ 1,
         data   = df,
         family = stats::binomial()
-      )
+      ))
 
-      lrt <- stats::anova(fit_null, fit_full, test = "LRT")
+      lrt <- suppressWarnings(stats::anova(fit_null, fit_full, test = "LRT"))
       lrt[["Pr(>Chi)"]][2]
     }
   },
-  error   = function(e) NA_real_,
-  warning = function(w) NA_real_
+  error   = function(e) NA_real_
   )
 
   return(list(

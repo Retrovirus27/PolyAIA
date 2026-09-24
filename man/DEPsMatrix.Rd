@@ -37,6 +37,15 @@ DEPsMatrix(
   rmsk = NULL,
   repeat_masker_positions = "Intron",
   drop_na_cols = TRUE,
+  pair_rule = c("max", "top"),
+  exclude_peaks = FALSE,
+  peak_audit = NULL,
+  phantom_min_counts = 50,
+  phantom_max_ratio = 0.1,
+  min_site_reads = 10,
+  min_site_usage = 0.05,
+  min_rep_pairs = 0.9,
+  return_filter = FALSE,
   return_seurat = FALSE,
   verbose = TRUE
 )
@@ -174,6 +183,37 @@ columns are \code{NA} by construction, and \code{RED_LRT_cov_*} is
 \code{NA} without a \code{covariate_formula}. Default \code{TRUE}; set
 \code{FALSE} to keep a fixed column layout.}
 
+\item{pair_rule}{How the proximal/distal pair of each gene is chosen, per
+RED type. \code{"max"} (default): the pair with the largest combined
+change in proportion between treatment and control. \code{"top"}: the
+most-used sites from pooled treatment + control reads of the comparison
+(REDu: the two most-used 3'-most-exon sites; REDi: the most-used intronic
+site and the most-used 3'-most-exon site downstream of it), which does not
+depend on the treatment-vs-control difference.}
+
+\item{exclude_peaks}{Logical. Remove "phantom" peaks (counts in the matrix
+but no reads in their window of the fragment files; see
+\code{PeakAudit()}) before pairing. Default \code{FALSE}.}
+
+\item{peak_audit}{Optional output of \code{PeakAudit()} to reuse. If
+\code{NULL} and \code{exclude_peaks = TRUE}, it is computed (slow).}
+
+\item{phantom_min_counts, phantom_max_ratio}{Passed to \code{PeakAudit()}
+when it is computed here. Defaults \code{50} and \code{0.1}.}
+
+\item{min_site_reads}{Minimum mean reads per replicate of EACH site of the
+pair in EACH group for \code{ok_reads}. Default \code{10}.}
+
+\item{min_site_usage}{Minimum share of the gene's pooled reads of each site
+of the pair for \code{ok_usage}. Default \code{0.05}.}
+
+\item{min_rep_pairs}{Minimum \code{rep_pairs_frac} for \code{ok_replicates}.
+Default \code{0.9}.}
+
+\item{return_filter}{Logical. Also return \code{$filter}: per (cell type x
+comparison) the number of peaks before/after the peak filter
+(\code{$summary}) and the kept peaks (\code{$kept}). Default \code{FALSE}.}
+
 \item{return_seurat}{Logical. The result is always a list with
 \code{$red_scores} and \code{$polyAdb} (see \strong{Value}). If
 \code{TRUE}, the list additionally includes \code{$seu} -- the
@@ -195,12 +235,22 @@ A combined \code{data.frame} of RED scores across all cell types and
   gene's sites; equals DPAU when \eqn{n=2}). A group with fewer than
   \code{gdpau_min_reads} supporting reads gives \code{NA}.
 
+  Quantifiability of each pair: \code{p_/d_reads_control},
+  \code{p_/d_reads_treatment} (mean reads per replicate), \code{p_/d_usage}
+  (share of the gene's pooled reads), \code{rep_pairs_frac} (fraction of
+  treatment-vs-control replicate match-ups, e.g. 4 x 4 = 16, in which the
+  treated \eqn{\log_2(d/p)} lies in the direction of RED; 1 = complete
+  separation), the flags \code{ok_reads}, \code{ok_usage},
+  \code{ok_replicates}, and \code{quantifiable} (all three \code{TRUE}).
+
   Always returns a \strong{list}: \code{$red_scores} (the RED table above,
   suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb} (the
   analyzed peak-level table -- one row per peak, TE handling applied, with a
   \code{Repeated_Masker} flag -- suitable as \code{PolyAPlot()}'s
   \code{polyAdb}). With \code{return_seurat = TRUE} the list also has
-  \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object.
+  \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object;
+  with \code{exclude_peaks = TRUE}, \code{$peak_audit}; with
+  \code{return_filter = TRUE}, \code{$filter}.
 }
 \description{
 Integrated pipeline that takes an annotated Seurat object (with a polyA

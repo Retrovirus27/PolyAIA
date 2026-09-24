@@ -70,4 +70,7 @@ Imports:
     SingleR,
     edgeR
 Suggests:
-    SoupX
+    SoupX,
+    Libra
+Remotes:
+    neurorestore/Libra

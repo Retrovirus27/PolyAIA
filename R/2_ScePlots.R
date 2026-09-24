@@ -1171,3 +1171,293 @@ ClusterPlots <- function(object,
   return(ClusterElbow)
 }
 
+
+
+#' Density of log-CPM before / after the pseudobulk expression filter
+#'
+#' Plots, for every tested cell type x comparison block, the log-CPM density of
+#' each pseudobulk sample, either for all features entering the filter
+#' (\code{stage = "before"}) or for the retained ones (\code{stage = "after"}).
+#' Works for genes and peaks alike (the \code{filter} object of
+#' \code{\link{DEGsMatrix}()} or \code{\link{PseudobulkFilter}()}).
+#'
+#' log-CPM is computed per block (its own rows and columns) and stacked, so
+#' there are no fill-in zeros from merging blocks with different retained
+#' features. Library sizes come from the block's own rows (for "after" this
+#' matches \code{DGEList[keep, , keep.lib.sizes = FALSE]}).
+#'
+#' @param filter The \code{filter} element of \code{\link{DEGsMatrix}(return_filter = TRUE)}
+#'   or the output of \code{\link{PseudobulkFilter}()}.
+#' @param stage \code{"before"} or \code{"after"} the expression filter.
+#' @param condition One or more \code{Condition} labels. \code{NULL} = all
+#'   (samples shared between comparisons, such as a common control, are then
+#'   drawn once per comparison).
+#' @param cells Optional subset of cell types.
+#' @param color_by \code{sample_meta} column used for colour. Default
+#'   \code{"Cells"}.
+#' @param facet_by \code{NULL}, a \code{sample_meta} column, or a named vector
+#'   mapping cell types to facets (e.g. subpopulation -> population). Cell
+#'   types not in the vector are shown as \code{"Other"} with a warning.
+#' @param colors Optional named colour vector; its names also set the legend
+#'   and label order.
+#' @param facet_levels Optional facet order.
+#' @param drop_zero Drop observations whose raw count is 0. Default \code{FALSE}.
+#' @param prior.count Prior count of the log-CPM transform. Default 2.
+#' @param prior_scope How the prior count is scaled (edgeR adds
+#'   \code{prior.count * lib.size / mean(lib.size)}; the mean decides where zero
+#'   counts land on the x axis). \code{"global"} (default): mean over all
+#'   plotted samples, so zeros of every cell type fall at the same x.
+#'   \code{"block"}: mean within each block (the zero peak then shifts right
+#'   for cell types with small libraries).
+#' @param title Plot title. \code{NULL} = "Before/After filtering (Genes/Peaks)".
+#' @param subtitle Optional subtitle. Default none.
+#' @param n_label Label in the top-right corner of each panel, one line per
+#'   cell type: \code{"features"} (default, number of genes/peaks plotted -- compare
+#'   "before" and "after"), \code{"cells"}, \code{"cells_features"} or
+#'   \code{"none"}.
+#' @param label_size Text size of that label. Default 3.5.
+#' @param rows_by_condition If \code{TRUE}, one row per comparison and one
+#'   column per \code{facet_by} group. Default \code{FALSE}.
+#' @param xlim,ylim Axis limits. \code{xlim} is applied as scale limits with
+#'   \code{oob = scales::oob_keep}, so densities are evaluated over the whole
+#'   range without dropping data; \code{ylim} only zooms.
+#' @param legend.position Legend position. Default \code{"none"}.
+#'
+#' @return A \code{ggplot} object.
+#'
+#' @examples
+#' \dontrun{
+#' degs <- DEGsMatrix(seu, comparisons, celltype_col = "Subpopulation",
+#'                    label_col = "contrast", replicate_col = "Number",
+#'                    return_filter = TRUE)
+#' QCDensity(degs$filter, stage = "before", condition = "B6_Alcohol_vs_B6_Control",
+#'           facet_by = subpop_to_population, colors = subpop_colors)
+#' QCDensity(degs$filter, stage = "after", rows_by_condition = TRUE,
+#'           facet_by = subpop_to_population)
+#' }
+#'
+#' @importFrom rlang .data
+#' @export
+QCDensity <- function(filter,
+                      stage             = c("before", "after"),
+                      condition         = NULL,
+                      cells             = NULL,
+                      color_by          = "Cells",
+                      facet_by          = NULL,
+                      colors            = NULL,
+                      facet_levels      = NULL,
+                      drop_zero         = FALSE,
+                      prior.count       = 2,
+                      prior_scope       = c("global", "block"),
+                      title             = NULL,
+                      subtitle          = NULL,
+                      n_label           = c("features", "cells", "cells_features", "none"),
+                      label_size        = 3.5,
+                      rows_by_condition = FALSE,
+                      xlim              = c(-6, 16),
+                      ylim              = c(0, 1.7),
+                      legend.position   = "none") {
+  stage       <- match.arg(stage)
+  n_label     <- match.arg(n_label)
+  prior_scope <- match.arg(prior_scope)
+
+  need <- c("pseudobulk", "sample_meta", "kept", "summary", "feature_type")
+  miss <- setdiff(need, names(filter))
+  if (length(miss)) {
+    stop("`filter` is missing element(s): ", paste(miss, collapse = ", "),
+         ". Pass DEGsMatrix(return_filter = TRUE)$filter or PseudobulkFilter().")
+  }
+
+  blocks <- filter$summary[filter$summary$status == "ok", , drop = FALSE]
+  if (!is.null(condition)) {
+    bad <- setdiff(condition, unique(filter$summary$Condition))
+    if (length(bad)) stop("Unknown condition(s): ", paste(bad, collapse = ", "))
+    blocks <- blocks[blocks$Condition %in% condition, , drop = FALSE]
+  }
+  if (!is.null(cells)) blocks <- blocks[blocks$Cells %in% cells, , drop = FALSE]
+  if (!nrow(blocks)) stop("No tested blocks left after `condition` / `cells` selection.")
+
+  if (length(unique(blocks$Condition)) > 1 && !isTRUE(rows_by_condition)) {
+    message("Plotting ", length(unique(blocks$Condition)), " comparisons together: ",
+            "samples shared between them (e.g. a common control) appear once per ",
+            "comparison. Use `condition` or `rows_by_condition = TRUE`.")
+  }
+
+  pb <- filter$pseudobulk
+  sm <- filter$sample_meta
+  ft <- filter$feature_type
+
+  # ---- count matrix of each block ----------------------------------------------
+  mats <- lapply(seq_len(nrow(blocks)), function(i) {
+    b <- blocks[i, ]
+    s <- sm[sm$Cells == b$Cells & sm$label %in% c(b$treatment, b$control), , drop = FALSE]
+    feats <- if (stage == "before") {
+      rownames(pb)
+    } else {
+      filter$kept$feature[filter$kept$Cells == b$Cells &
+                            filter$kept$Condition == b$Condition]
+    }
+    if (!length(feats) || !nrow(s)) return(NULL)
+    as.matrix(pb[feats, s$sample_id, drop = FALSE])
+  })
+
+  lib_all  <- unlist(lapply(mats, function(x) if (!is.null(x)) colSums(x)))
+  mean_lib <- mean(lib_all[lib_all > 0])
+
+  # edgeR::cpm(log = TRUE) formula; only the mean scaling the prior changes
+  .logcpm <- function(x, mean_ref) {
+    lib <- colSums(x)
+    pcs <- lib / mean_ref * prior.count
+    t(log2(t(x) + pcs) - log2(lib + 2 * pcs)) + log2(1e6)
+  }
+
+  long <- lapply(seq_len(nrow(blocks)), function(i) {
+    x <- mats[[i]]
+    if (is.null(x)) return(NULL)
+    b <- blocks[i, ]
+    mref <- if (prior_scope == "global") mean_lib else mean(colSums(x))
+    lcpm <- .logcpm(x, mref)
+    df <- data.frame(
+      feature   = rep(rownames(lcpm), times = ncol(lcpm)),
+      sample_id = rep(colnames(lcpm), each  = nrow(lcpm)),
+      value     = as.vector(lcpm),
+      stringsAsFactors = FALSE
+    )
+    if (drop_zero) df <- df[as.vector(x) != 0, , drop = FALSE]
+    df$Condition  <- b$Condition
+    df$n_features <- nrow(x)
+    df
+  })
+
+  df <- dplyr::bind_rows(long)
+  if (!nrow(df)) stop("Nothing to plot for stage = '", stage, "'.")
+  df <- dplyr::left_join(df, sm, by = "sample_id")
+  df$.line <- paste(df$Condition, df$sample_id)
+
+  if (!color_by %in% colnames(df)) {
+    stop("`color_by` = '", color_by, "' not found. Available: ",
+         paste(colnames(sm), collapse = ", "))
+  }
+  if (!is.null(colors) && !is.null(names(colors))) {
+    lv <- c(intersect(names(colors), unique(df[[color_by]])),
+            setdiff(unique(df[[color_by]]), names(colors)))
+    df[[color_by]] <- factor(df[[color_by]], levels = lv)
+  }
+
+  # ---- facets ------------------------------------------------------------------
+  use_facet <- !is.null(facet_by)
+  if (use_facet) {
+    if (length(facet_by) == 1 && is.null(names(facet_by))) {
+      if (!facet_by %in% colnames(df)) stop("`facet_by` column '", facet_by, "' not found.")
+      df$.facet <- as.character(df[[facet_by]])
+    } else {
+      df$.facet <- unname(facet_by[as.character(df$Cells)])
+      unmapped <- unique(df$Cells[is.na(df$.facet)])
+      if (length(unmapped)) {
+        warning("Not in `facet_by` (shown as 'Other'): ",
+                paste(unmapped, collapse = ", "), call. = FALSE)
+        df$.facet[is.na(df$.facet)] <- "Other"
+      }
+      if (is.null(facet_levels)) facet_levels <- unique(unname(facet_by))
+    }
+    if (!is.null(facet_levels)) {
+      df$.facet <- factor(df$.facet,
+                          levels = c(intersect(facet_levels, unique(df$.facet)),
+                                     setdiff(unique(df$.facet), facet_levels)))
+    }
+  }
+
+  # ---- per-panel label ------------------------------------------------------------
+  fmt <- function(v) format(v, big.mark = ",", scientific = FALSE, trim = TRUE)
+  lab_df <- NULL
+  if (n_label != "none") {
+    keys <- c(if (isTRUE(rows_by_condition)) "Condition",
+              if (use_facet) ".facet", "Cells")
+    smp  <- unique(df[, c(keys, "sample_id", "n_cells")])
+    lab_df <- stats::aggregate(smp["n_cells"], by = smp[keys], FUN = sum)
+    nf <- stats::aggregate(df["n_features"], by = df[keys], FUN = max)
+    lab_df <- merge(lab_df, nf, by = keys)
+
+    ct_order <- if (is.factor(df[[color_by]]) && color_by == "Cells") {
+      levels(df[[color_by]])
+    } else {
+      sort(unique(as.character(df$Cells)))
+    }
+    lab_df$.ord <- match(as.character(lab_df$Cells), ct_order)
+    panel_of <- function(d) {
+      pk <- setdiff(keys, "Cells")
+      if (length(pk)) interaction(d[pk], drop = TRUE, lex.order = TRUE) else rep(1, nrow(d))
+    }
+    lab_df <- lab_df[order(panel_of(lab_df), lab_df$.ord), , drop = FALSE]
+    lab_df$.rank <- stats::ave(lab_df$.ord, panel_of(lab_df), FUN = seq_along)
+
+    step <- diff(ylim) * 0.075
+    lab_df$y <- ylim[2] - (lab_df$.rank - 1) * step
+    lab_df$x <- xlim[2]
+    lab_df$label <- switch(
+      n_label,
+      features       = sprintf("%s: %s %ss", lab_df$Cells, fmt(lab_df$n_features), ft),
+      cells          = sprintf("%s: %s cells", lab_df$Cells, fmt(lab_df$n_cells)),
+      cells_features = sprintf("%s: %s cells | %s %ss", lab_df$Cells,
+                               fmt(lab_df$n_cells), fmt(lab_df$n_features), ft)
+    )
+    if (color_by == "Cells") {
+      lab_df$Cells <- factor(as.character(lab_df$Cells),
+                             levels = if (is.factor(df$Cells)) levels(df$Cells)
+                                      else sort(unique(as.character(df$Cells))))
+    }
+  }
+
+  if (is.null(title)) {
+    title <- sprintf("%s filtering (%ss)",
+                     if (stage == "before") "Before" else "After",
+                     tools::toTitleCase(ft))
+  }
+
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = .data$value, colour = .data[[color_by]],
+                                        group = .data$.line)) +
+    ggplot2::geom_density() +
+    ggplot2::labs(x = "Log(CPM)", y = "Density", title = title, subtitle = subtitle) +
+    ggplot2::scale_x_continuous(limits = xlim, oob = scales::oob_keep) +
+    ggplot2::coord_cartesian(ylim = ylim) +
+    th +
+    ggplot2::theme(
+      strip.text       = ggplot2::element_text(size = 15, hjust = 0.5, vjust = 0.5),
+      strip.text.y     = ggplot2::element_text(size = 12, angle = 90, hjust = 0.5, vjust = 0.5),
+      strip.background = ggplot2::element_rect(fill = "white", color = "white", linewidth = 0.5),
+      axis.text.x      = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1, size = 15),
+      axis.text.y      = ggplot2::element_text(size = 15),
+      title            = ggplot2::element_text(size = 15),
+      plot.subtitle    = ggplot2::element_text(size = 13, hjust = 0.5),
+      axis.ticks       = ggplot2::element_line(linewidth = 0.5),
+      axis.line        = ggplot2::element_line(linewidth = 0.25),
+      legend.position  = legend.position
+    )
+
+  if (!is.null(lab_df) && nrow(lab_df)) {
+    if (color_by == "Cells") {
+      p <- p + ggplot2::geom_text(
+        data = lab_df,
+        ggplot2::aes(x = .data$x, y = .data$y, label = .data$label, colour = .data$Cells),
+        inherit.aes = FALSE, hjust = 1, vjust = 1, size = label_size, show.legend = FALSE)
+    } else {
+      p <- p + ggplot2::geom_text(
+        data = lab_df,
+        ggplot2::aes(x = .data$x, y = .data$y, label = .data$label),
+        inherit.aes = FALSE, hjust = 1, vjust = 1, size = label_size,
+        colour = "black", show.legend = FALSE)
+    }
+  }
+  if (!is.null(colors)) p <- p + ggplot2::scale_colour_manual(values = colors, drop = TRUE)
+  if (isTRUE(rows_by_condition)) {
+    p <- p + if (use_facet) {
+      ggplot2::facet_grid(rows = ggplot2::vars(.data$Condition),
+                          cols = ggplot2::vars(.data$.facet), scales = "fixed")
+    } else {
+      ggplot2::facet_grid(rows = ggplot2::vars(.data$Condition), scales = "fixed")
+    }
+  } else if (use_facet) {
+    p <- p + ggplot2::facet_wrap(ggplot2::vars(.data$.facet), scales = "fixed")
+  }
+  p
+}
