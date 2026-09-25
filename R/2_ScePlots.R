@@ -1211,11 +1211,13 @@ ClusterPlots <- function(object,
 #'   for cell types with small libraries).
 #' @param title Plot title. \code{NULL} = "Before/After filtering (Genes/Peaks)".
 #' @param subtitle Optional subtitle. Default none.
-#' @param n_label Label in the top-right corner of each panel, one line per
+#' @param n_label Label in the top corner of each panel, one line per
 #'   cell type: \code{"features"} (default, number of genes/peaks plotted -- compare
 #'   "before" and "after"), \code{"cells"}, \code{"cells_features"} or
 #'   \code{"none"}.
 #' @param label_size Text size of that label. Default 3.5.
+#' @param label_position Corner of each panel for that label:
+#'   \code{"right"} (default, top-right) or \code{"left"} (top-left).
 #' @param rows_by_condition If \code{TRUE}, one row per comparison and one
 #'   column per \code{facet_by} group. Default \code{FALSE}.
 #' @param xlim,ylim Axis limits. \code{xlim} is applied as scale limits with
@@ -1253,19 +1255,21 @@ QCDensity <- function(filter,
                       subtitle          = NULL,
                       n_label           = c("features", "cells", "cells_features", "none"),
                       label_size        = 3.5,
+                      label_position    = c("right", "left"),
                       rows_by_condition = FALSE,
                       xlim              = c(-6, 16),
                       ylim              = c(0, 1.7),
                       legend.position   = "none") {
   stage       <- match.arg(stage)
   n_label     <- match.arg(n_label)
+  label_position <- match.arg(label_position)
   prior_scope <- match.arg(prior_scope)
 
   need <- c("pseudobulk", "sample_meta", "kept", "summary", "feature_type")
   miss <- setdiff(need, names(filter))
   if (length(miss)) {
     stop("`filter` is missing element(s): ", paste(miss, collapse = ", "),
-         ". Pass DEGsMatrix(return_filter = TRUE)$filter or PseudobulkFilter().")
+         ". Pass DEGsMatrix()/DEPsMatrix(return_filter = TRUE)$filter or PseudobulkFilter().")
   }
 
   blocks <- filter$summary[filter$summary$status == "ok", , drop = FALSE]
@@ -1292,7 +1296,14 @@ QCDensity <- function(filter,
     b <- blocks[i, ]
     s <- sm[sm$Cells == b$Cells & sm$label %in% c(b$treatment, b$control), , drop = FALSE]
     feats <- if (stage == "before") {
-      rownames(pb)
+      # DEPsMatrix()'s filter records the peaks each block saw before the
+      # filter; PseudobulkFilter() tests every feature of the pseudobulk.
+      if (!is.null(filter$tested)) {
+        filter$tested$feature[filter$tested$Cells == b$Cells &
+                                filter$tested$Condition == b$Condition]
+      } else {
+        rownames(pb)
+      }
     } else {
       filter$kept$feature[filter$kept$Cells == b$Cells &
                             filter$kept$Condition == b$Condition]
@@ -1393,7 +1404,7 @@ QCDensity <- function(filter,
 
     step <- diff(ylim) * 0.075
     lab_df$y <- ylim[2] - (lab_df$.rank - 1) * step
-    lab_df$x <- xlim[2]
+    lab_df$x <- if (label_position == "left") xlim[1] else xlim[2]
     lab_df$label <- switch(
       n_label,
       features       = sprintf("%s: %s %ss", lab_df$Cells, fmt(lab_df$n_features), ft),
@@ -1435,16 +1446,17 @@ QCDensity <- function(filter,
     )
 
   if (!is.null(lab_df) && nrow(lab_df)) {
+    lab_hjust <- if (label_position == "left") 0 else 1   # anchored at the panel edge
     if (color_by == "Cells") {
       p <- p + ggplot2::geom_text(
         data = lab_df,
         ggplot2::aes(x = .data$x, y = .data$y, label = .data$label, colour = .data$Cells),
-        inherit.aes = FALSE, hjust = 1, vjust = 1, size = label_size, show.legend = FALSE)
+        inherit.aes = FALSE, hjust = lab_hjust, vjust = 1, size = label_size, show.legend = FALSE)
     } else {
       p <- p + ggplot2::geom_text(
         data = lab_df,
         ggplot2::aes(x = .data$x, y = .data$y, label = .data$label),
-        inherit.aes = FALSE, hjust = 1, vjust = 1, size = label_size,
+        inherit.aes = FALSE, hjust = lab_hjust, vjust = 1, size = label_size,
         colour = "black", show.legend = FALSE)
     }
   }

@@ -1663,9 +1663,13 @@ DEPolyAPeaks <- function(
 #'   of the pair for \code{ok_usage}. Default \code{0.05}.
 #' @param min_rep_pairs Minimum \code{rep_pairs_frac} for \code{ok_replicates}.
 #'   Default \code{0.9}.
-#' @param return_filter Logical. Also return \code{$filter}: per (cell type x
-#'   comparison) the number of peaks before/after the peak filter
-#'   (\code{$summary}) and the kept peaks (\code{$kept}). Default \code{FALSE}.
+#' @param return_filter Logical. Also return \code{$filter}, with the same
+#'   structure as \code{PseudobulkFilter()} so it can be passed to
+#'   \code{QCDensity()}: the pseudobulk counts each (cell type x comparison)
+#'   block filtered (\code{$pseudobulk}, \code{$sample_meta}), the peaks each
+#'   block saw (\code{$tested}) and kept (\code{$kept}), and \code{$summary}
+#'   (peaks in / kept, status). \code{n_cells} is not available here (NA).
+#'   Default \code{FALSE}.
 #' @param return_seurat Logical. The result is always a list with
 #'   \code{$red_scores} and \code{$polyAdb} (see \strong{Value}). If
 #'   \code{TRUE}, the list additionally includes \code{$seu} -- the
@@ -2216,7 +2220,8 @@ DEPsMatrix <- function(
           pair_rule         = pair_rule,
           min_site_reads    = min_site_reads,
           min_site_usage    = min_site_usage,
-          min_rep_pairs     = min_rep_pairs
+          min_rep_pairs     = min_rep_pairs,
+          keep_counts       = isTRUE(return_filter)
         ),
         error = function(e) {
           block_fail <<- c(block_fail,
@@ -2228,10 +2233,13 @@ DEPsMatrix <- function(
       fi <- if (!is.null(red)) attr(red, "red_filter") else NULL
       block_filter[[length(block_filter) + 1]] <<- list(
         Cells = canonical_by_san[[ct]], Condition = cmp$Condition,
-        status = if (is.null(red)) "error" else if (nrow(red) == 0) "empty" else "ok",
+        treatment = cmp$treatment, control = cmp$control,
+        red_status = if (is.null(red)) "error" else if (nrow(red) == 0) "empty" else "ok",
         n_peaks = if (is.null(fi)) NA_integer_ else fi$n_peaks,
         n_kept  = if (is.null(fi)) NA_integer_ else fi$n_kept,
-        kept    = if (is.null(fi)) character(0) else fi$kept
+        kept    = if (is.null(fi)) character(0) else fi$kept,
+        counts  = if (is.null(fi)) NULL else fi$counts,
+        samples = if (is.null(fi)) NULL else fi$samples
       )
       if (is.null(red)) return(NULL)
       if (nrow(red) == 0) {
@@ -2338,17 +2346,70 @@ DEPsMatrix <- function(
 
   # Per-block peak filter: how many peaks each (cell type x comparison) had
   # before/after filterByExpr (or the manual filter), and which were kept.
+  # Same structure as PseudobulkFilter(), so it can be passed to QCDensity().
   if (isTRUE(return_filter)) {
-    res$filter <- list(
-      summary = dplyr::bind_rows(lapply(block_filter, function(b)
-        tibble::tibble(Cells = b$Cells, Condition = b$Condition, status = b$status,
-                       n_peaks = b$n_peaks, n_kept = b$n_kept))),
-      kept = dplyr::bind_rows(lapply(block_filter, function(b)
-        if (length(b$kept)) tibble::tibble(Cells = b$Cells, Condition = b$Condition,
-                                           peak = b$kept)))
-    )
+    res$filter <- .BuildDEPsFilter(block_filter, comparisons, assay, filter_method)
   }
   res
+}
+
+#' Assemble DEPsMatrix(return_filter = TRUE)$filter (internal)
+#'
+#' Builds the same structure as \code{PseudobulkFilter()} from the counts each
+#' (cell type x comparison) block actually filtered, so \code{QCDensity()}
+#' plots exactly what \code{DEPsMatrix()} used. \code{tested} holds the peaks
+#' each block saw before the filter ("before" stage).
+#' @noRd
+.BuildDEPsFilter <- function(block_filter, comparisons, assay, filter_method) {
+  has_counts <- vapply(block_filter, function(b) !is.null(b$counts), logical(1))
+
+  summary <- dplyr::bind_rows(lapply(block_filter, function(b)
+    tibble::tibble(Cells = b$Cells, Condition = b$Condition,
+                   treatment = b$treatment, control = b$control,
+                   n_in = b$n_peaks, n_kept = b$n_kept,
+                   status = if (!is.null(b$counts)) "ok" else "error",
+                   red_status = b$red_status)))
+
+  kept <- dplyr::bind_rows(lapply(block_filter, function(b)
+    if (length(b$kept)) tibble::tibble(Cells = b$Cells, Condition = b$Condition,
+                                       feature = b$kept)))
+  tested <- dplyr::bind_rows(lapply(block_filter[has_counts], function(b)
+    tibble::tibble(Cells = b$Cells, Condition = b$Condition,
+                   feature = rownames(b$counts))))
+
+  sample_meta <- dplyr::bind_rows(lapply(block_filter[has_counts], function(b)
+    data.frame(sample_id = b$samples$sample_id, Cells = b$Cells,
+               label = b$samples$label, replicate = b$samples$sample_id,
+               n_cells = NA_integer_, stringsAsFactors = FALSE)))
+  sample_meta <- sample_meta[!duplicated(sample_meta$sample_id), , drop = FALSE]
+  rownames(sample_meta) <- NULL
+
+  # One peaks x samples matrix. A control shared by several comparisons
+  # appears in several blocks with identical values -- keep it once.
+  rows <- unique(unlist(lapply(block_filter[has_counts], function(b) rownames(b$counts))))
+  trip <- dplyr::bind_rows(lapply(block_filter[has_counts], function(b) {
+    tm <- methods::as(b$counts, "TsparseMatrix")   # 0-based triplets
+    data.frame(i = match(rownames(b$counts)[tm@i + 1L], rows),
+               j = match(colnames(b$counts)[tm@j + 1L], sample_meta$sample_id),
+               x = tm@x)
+  }))
+  if (nrow(trip)) trip <- trip[!duplicated(trip[, c("i", "j")]), , drop = FALSE]
+  pb <- Matrix::sparseMatrix(i = trip$i, j = trip$j, x = trip$x,
+                             dims = c(length(rows), nrow(sample_meta)),
+                             dimnames = list(rows, sample_meta$sample_id))
+
+  list(
+    pseudobulk    = pb,
+    sample_meta   = sample_meta,
+    kept          = kept,
+    tested        = tested,
+    summary       = summary,
+    comparisons   = comparisons,
+    feature_type  = "peak",
+    assay         = assay,
+    filter_method = filter_method,
+    filter_scope  = "comparison"
+  )
 }
 
 #' Audit polyA peaks against their fragment-file support
@@ -2545,6 +2606,7 @@ PeakAudit <- function(seu,
     min_site_reads    = 10,
     min_site_usage    = 0.05,
     min_rep_pairs     = 0.9,
+    keep_counts       = FALSE,
     verbose           = FALSE
 ) {
 
@@ -2634,6 +2696,15 @@ PeakAudit <- function(seu,
     stopifnot(!anyNA(trt_covariates), !anyNA(ctrl_covariates))
   }
 
+  # Original pseudobulk column names, in the same order rename_with() numbers
+  # them below (polyA_treatment_1.., polyA_control_1..) -- used to return the
+  # block's counts with real sample names (DEPsMatrix(return_filter = TRUE)).
+  # (ignore.case = TRUE, like dplyr::matches())
+  trt_cols_orig  <- grep(paste0(treatment, "_", CellType), colnames(counts_obj),
+                         value = TRUE, ignore.case = TRUE)
+  ctrl_cols_orig <- grep(paste0(control,   "_", CellType), colnames(counts_obj),
+                         value = TRUE, ignore.case = TRUE)
+
   counts_polyA <- counts_obj %>%
     dplyr::rename_with(
       ~ paste0("polyA_treatment_", seq_along(.x)),
@@ -2685,6 +2756,23 @@ PeakAudit <- function(seu,
   # DEPsMatrix(return_filter = TRUE)).
   filter_info <- list(n_peaks = nrow(count_mat), n_kept = sum(keep),
                       kept = rownames(PolyA_DEP))
+  if (isTRUE(keep_counts)) {
+    # The block's counts BEFORE the filter (rows = the peaks the filter saw),
+    # with the real pseudobulk sample names, for QCDensity().
+    orig_of <- c(
+      stats::setNames(trt_cols_orig,  paste0("polyA_treatment_", seq_along(trt_cols_orig))),
+      stats::setNames(ctrl_cols_orig, paste0("polyA_control_",   seq_along(ctrl_cols_orig)))
+    )
+    cm <- count_mat
+    cm[is.na(cm)] <- 0
+    colnames(cm) <- unname(orig_of[colnames(count_mat)])
+    filter_info$counts  <- Matrix::Matrix(cm, sparse = TRUE)
+    filter_info$samples <- data.frame(
+      sample_id = colnames(cm),
+      label     = ifelse(grepl("^polyA_treatment_", colnames(count_mat)), treatment, control),
+      stringsAsFactors = FALSE
+    )
+  }
   .with_filter <- function(x) { attr(x, "red_filter") <- filter_info; x }
 
   # Drop peaks with no usable gene id BEFORE splitting. split() would otherwise

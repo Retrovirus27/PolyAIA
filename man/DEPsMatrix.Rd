@@ -210,9 +210,13 @@ of the pair for \code{ok_usage}. Default \code{0.05}.}
 \item{min_rep_pairs}{Minimum \code{rep_pairs_frac} for \code{ok_replicates}.
 Default \code{0.9}.}
 
-\item{return_filter}{Logical. Also return \code{$filter}: per (cell type x
-comparison) the number of peaks before/after the peak filter
-(\code{$summary}) and the kept peaks (\code{$kept}). Default \code{FALSE}.}
+\item{return_filter}{Logical. Also return \code{$filter}, with the same
+structure as \code{PseudobulkFilter()} so it can be passed to
+\code{QCDensity()}: the pseudobulk counts each (cell type x comparison)
+block filtered (\code{$pseudobulk}, \code{$sample_meta}), the peaks each
+block saw (\code{$tested}) and kept (\code{$kept}), and \code{$summary}
+(peaks in / kept, status). \code{n_cells} is not available here (NA).
+Default \code{FALSE}.}
 
 \item{return_seurat}{Logical. The result is always a list with
 \code{$red_scores} and \code{$polyAdb} (see \strong{Value}). If

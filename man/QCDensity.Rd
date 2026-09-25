@@ -20,6 +20,7 @@ QCDensity(
   subtitle = NULL,
   n_label = c("features", "cells", "cells_features", "none"),
   label_size = 3.5,
+  label_position = c("right", "left"),
   rows_by_condition = FALSE,
   xlim = c(-6, 16),
   ylim = c(0, 1.7),
@@ -65,12 +66,15 @@ for cell types with small libraries).}
 
 \item{subtitle}{Optional subtitle. Default none.}
 
-\item{n_label}{Label in the top-right corner of each panel, one line per
+\item{n_label}{Label in the top corner of each panel, one line per
 cell type: \code{"features"} (default, number of genes/peaks plotted -- compare
 "before" and "after"), \code{"cells"}, \code{"cells_features"} or
 \code{"none"}.}
 
 \item{label_size}{Text size of that label. Default 3.5.}
+
+\item{label_position}{Corner of each panel for that label:
+\code{"right"} (default, top-right) or \code{"left"} (top-left).}
 
 \item{rows_by_condition}{If \code{TRUE}, one row per comparison and one
 column per \code{facet_by} group. Default \code{FALSE}.}
