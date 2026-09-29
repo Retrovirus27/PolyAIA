@@ -11,6 +11,30 @@
 }
 
 
+#' Feature filter shared by PseudobulkFilter()/DEGsMatrix() and DEPsMatrix()
+#'
+#' @param x Features x samples count matrix (rownames = features).
+#' @param group Group of each sample (column of \code{x}).
+#' @param filter_method \code{"edgeR"}: \code{edgeR::filterByExpr()};
+#'   \code{"manual"}: \code{rowSums(x) >= mincounts}; \code{"none"}: keep all.
+#' @param mincounts Threshold for \code{"manual"}.
+#' @param filterByExpr_args Extra arguments for \code{edgeR::filterByExpr()}.
+#' @return Named logical vector (one per feature): \code{TRUE} = kept.
+#' @noRd
+.FilterFeatures <- function(x, group,
+                            filter_method     = c("edgeR", "manual", "none"),
+                            mincounts         = 10,
+                            filterByExpr_args = list()) {
+  filter_method <- match.arg(filter_method)
+  keep <- switch(
+    filter_method,
+    edgeR  = do.call(edgeR::filterByExpr, c(list(x, group = group), filterByExpr_args)),
+    manual = rowSums(x) >= mincounts,
+    none   = rep(TRUE, nrow(x))
+  )
+  stats::setNames(as.logical(keep), rownames(x))
+}
+
 #' Pseudobulk counts and expression filter per cell type and comparison
 #'
 #' Aggregates raw counts into one pseudobulk sample per
@@ -177,14 +201,8 @@ PseudobulkFilter <- function(seu,
   summ_list <- list()
 
   .apply_filter <- function(x, grp) {
-    keep <- switch(
-      filter_method,
-      edgeR  = do.call(edgeR::filterByExpr,
-                       c(list(x, group = grp), filterByExpr_args)),
-      manual = rowSums(x) >= mincounts,
-      none   = rep(TRUE, nrow(x))
-    )
-    stats::setNames(as.logical(keep), rownames(x))
+    .FilterFeatures(x, grp, filter_method = filter_method, mincounts = mincounts,
+                    filterByExpr_args = filterByExpr_args)
   }
 
   # filter_scope = "celltype": one filter per cell type on all its samples,

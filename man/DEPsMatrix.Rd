@@ -22,8 +22,9 @@ DEPsMatrix(
   modified_residuals = FALSE,
   de_features = NULL,
   min_cells = 10,
-  filter_method = "edgeR",
+  filter_method = c("edgeR", "manual", "none"),
   mincounts = 10,
+  filterByExpr_args = list(),
   gdpau_min_reads = 5,
   covariates = NULL,
   sample_metadata = NULL,
@@ -130,8 +131,17 @@ lacks the required pseudobulk columns for a given comparison (e.g. no cells
 in one condition) is skipped for that comparison with a warning rather than
 erroring. Default 10.}
 
-\item{filter_method, mincounts}{Passed to the RED core. Default
-\code{"edgeR"}, 10.}
+\item{filter_method}{Peak filter applied in each cell type x comparison
+block before pairing (same options as \code{DEGsMatrix()}).
+\code{"edgeR"} (default): \code{edgeR::filterByExpr()} with the block's
+treatment/control design; \code{"manual"}: keep peaks with
+\code{rowSums(counts) >= mincounts}; \code{"none"}: keep all peaks.}
+
+\item{mincounts}{Threshold for \code{filter_method = "manual"}. Default 10.}
+
+\item{filterByExpr_args}{Named list of extra arguments for
+\code{edgeR::filterByExpr()} (e.g. \code{list(min.count = 5)}).
+Default \code{list()}.}
 
 \item{gdpau_min_reads}{Minimum total supporting reads a group must have (for
 the gene, for gDPAU; for the site pair, for DPAU) to compute the index

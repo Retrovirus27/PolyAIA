@@ -1602,8 +1602,15 @@ DEPolyAPeaks <- function(
 #'   lacks the required pseudobulk columns for a given comparison (e.g. no cells
 #'   in one condition) is skipped for that comparison with a warning rather than
 #'   erroring. Default 10.
-#' @param filter_method,mincounts Passed to the RED core. Default
-#'   \code{"edgeR"}, 10.
+#' @param filter_method Peak filter applied in each cell type x comparison
+#'   block before pairing (same options as \code{DEGsMatrix()}).
+#'   \code{"edgeR"} (default): \code{edgeR::filterByExpr()} with the block's
+#'   treatment/control design; \code{"manual"}: keep peaks with
+#'   \code{rowSums(counts) >= mincounts}; \code{"none"}: keep all peaks.
+#' @param mincounts Threshold for \code{filter_method = "manual"}. Default 10.
+#' @param filterByExpr_args Named list of extra arguments for
+#'   \code{edgeR::filterByExpr()} (e.g. \code{list(min.count = 5)}).
+#'   Default \code{list()}.
 #' @param gdpau_min_reads Minimum total supporting reads a group must have (for
 #'   the gene, for gDPAU; for the site pair, for DPAU) to compute the index
 #'   there; below this that group's value is \code{NA}, making the
@@ -1753,8 +1760,9 @@ DEPsMatrix <- function(
     modified_residuals  = FALSE,
     de_features         = NULL,
     min_cells           = 10,
-    filter_method       = "edgeR",
+    filter_method       = c("edgeR", "manual", "none"),
     mincounts           = 10,
+    filterByExpr_args   = list(),
     gdpau_min_reads     = 5,
     covariates          = NULL,
     sample_metadata     = NULL,
@@ -1784,6 +1792,12 @@ DEPsMatrix <- function(
   # ---- Validation -----------------------------------------------------------
   repeat_masker <- match.arg(repeat_masker)
   pair_rule     <- match.arg(pair_rule)
+  filter_method <- match.arg(filter_method)
+  if (filter_method == "manual" &&
+      (!is.numeric(mincounts) || length(mincounts) != 1 || mincounts < 0)) {
+    stop("`mincounts` must be a single non-negative number.")
+  }
+  if (!is.list(filterByExpr_args)) stop("`filterByExpr_args` must be a named list.")
   if (!methods::is(seu, "Seurat")) stop("`seu` must be a Seurat object.")
   if (repeat_masker != "none" && is.null(rmsk)) {
     stop("`rmsk` (a RepeatMasker table with genoName/genoStart/genoEnd/strand ",
@@ -2214,6 +2228,7 @@ DEPsMatrix <- function(
           Condition         = if (isTRUE(Pasta)) cmp$Condition else NULL,
           filter_method     = filter_method,
           mincounts         = mincounts,
+          filterByExpr_args = filterByExpr_args,
           sample_metadata   = sample_metadata,
           covariate_formula = covariate_formula,
           gdpau_min_reads   = gdpau_min_reads,
@@ -2599,6 +2614,7 @@ PeakAudit <- function(seu,
     Condition   = NULL,
     filter_method = "edgeR",
     mincounts     = 10,
+    filterByExpr_args = list(),
     sample_metadata   = NULL,
     covariate_formula = NULL,
     gdpau_min_reads   = 5,
@@ -2733,20 +2749,15 @@ PeakAudit <- function(seu,
   count_cols <- grep("^polyA_treatment_|^polyA_control_", colnames(PolyA_DEP), value = TRUE)
   count_mat  <- as.matrix(PolyA_DEP[, count_cols])
 
-  # Filter
-  if (filter_method == "edgeR") {
-    group <- dplyr::case_when(
-      grepl("^polyA_treatment_", count_cols) ~ "treatment",
-      grepl("^polyA_control_",   count_cols) ~ "control"
-    )
-    keep <- edgeR::filterByExpr(count_mat, group = group)
-
-  } else if (filter_method == "manual") {
-    keep <- rowSums(count_mat) >= mincounts
-
-  } else {
-    stop("filter_method must be 'edgeR' or 'manual'")
-  }
+  # Filter -- same helper as DEGsMatrix()/PseudobulkFilter()
+  group <- dplyr::case_when(
+    grepl("^polyA_treatment_", count_cols) ~ "treatment",
+    grepl("^polyA_control_",   count_cols) ~ "control"
+  )
+  keep <- .FilterFeatures(count_mat, group,
+                          filter_method     = filter_method,
+                          mincounts         = mincounts,
+                          filterByExpr_args = filterByExpr_args)
 
   if (verbose) message(sprintf("Keeping %d / %d peaks after '%s' filtering", sum(keep), nrow(count_mat), filter_method))
 
