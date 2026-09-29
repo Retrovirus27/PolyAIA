@@ -14,6 +14,8 @@ SeuratPipeline(
   reduction.name = "umap_harmony",
   reduction.key = "Harmony_",
   custom_pca = NULL,
+  cluster = TRUE,
+  resolutions = seq(0.1, 1, 0.1),
   verbose = TRUE
 )
 }
@@ -53,6 +55,15 @@ joining the first and last PC's stdev (the point of maximum curvature on
 the ElbowPlot). Supply a number (1-30) to override the automatic choice.
 PCA always computes 30 PCs, so \code{custom_pca} cannot exceed 30.}
 
+\item{cluster}{Logical. Run \code{Seurat::FindNeighbors()} +
+\code{Seurat::FindClusters()} at the end, on \code{new.reduction} with the
+same \code{n_dims} used for integration and UMAP. Default \code{TRUE}.}
+
+\item{resolutions}{Numeric vector of resolutions for
+\code{Seurat::FindClusters()}; one metadata column per resolution
+(\code{"<assay>_snn_res.<resolution>"}, e.g. \code{"RNA_snn_res.0.1"}).
+Default \code{seq(0.1, 1, 0.1)}. See \code{ClusterTree()} to compare them.}
+
 \item{verbose}{Logical. Whether to print progress messages, including which
 \code{n_dims} was selected. Default \code{TRUE}.}
 }
@@ -60,7 +71,10 @@ PCA always computes 30 PCs, so \code{custom_pca} cannot exceed 30.}
 The input \code{seurat_obj}, with its assay layers split and
   re-joined, and \code{"pca"}, \code{new.reduction}, and
   \code{reduction.name} reductions computed. The \code{n_dims} used is
-  stored at \code{seurat_obj@misc$n_dims} for later reference.
+  stored at \code{seurat_obj@misc$n_dims} for later reference. With
+  \code{cluster = TRUE}, also the \code{"<assay>_nn"}/\code{"<assay>_snn"}
+  graphs and one cluster column per resolution (column prefix stored at
+  \code{seurat_obj@misc$cluster_prefix}).
 }
 \description{
 Runs the standard Seurat v5 multi-sample workflow used in this pipeline's
@@ -74,6 +88,7 @@ compute a 2D UMAP from the integrated space -- all in one call.
 \dontrun{
 seurat_obj <- SeuratPipeline(seurat_obj)
 seurat_obj <- SeuratPipeline(seurat_obj, custom_pca = 10)
+seurat_obj <- SeuratPipeline(seurat_obj, resolutions = c(0.1, 0.3, 0.5))
 }
 
 }

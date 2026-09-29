@@ -71,6 +71,8 @@ Imports:
     edgeR
 Suggests:
     SoupX,
+    clustree,
+    ggraph,
     Libra
 Remotes:
     neurorestore/Libra

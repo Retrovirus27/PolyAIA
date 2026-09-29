@@ -725,18 +725,29 @@ UploadData <- function(data, DataName, Condition = NULL, RefAnnotation1 = NULL, 
 #'   joining the first and last PC's stdev (the point of maximum curvature on
 #'   the ElbowPlot). Supply a number (1-30) to override the automatic choice.
 #'   PCA always computes 30 PCs, so \code{custom_pca} cannot exceed 30.
+#' @param cluster Logical. Run \code{Seurat::FindNeighbors()} +
+#'   \code{Seurat::FindClusters()} at the end, on \code{new.reduction} with the
+#'   same \code{n_dims} used for integration and UMAP. Default \code{TRUE}.
+#' @param resolutions Numeric vector of resolutions for
+#'   \code{Seurat::FindClusters()}; one metadata column per resolution
+#'   (\code{"<assay>_snn_res.<resolution>"}, e.g. \code{"RNA_snn_res.0.1"}).
+#'   Default \code{seq(0.1, 1, 0.1)}. See \code{ClusterTree()} to compare them.
 #' @param verbose Logical. Whether to print progress messages, including which
 #'   \code{n_dims} was selected. Default \code{TRUE}.
 #'
 #' @return The input \code{seurat_obj}, with its assay layers split and
 #'   re-joined, and \code{"pca"}, \code{new.reduction}, and
 #'   \code{reduction.name} reductions computed. The \code{n_dims} used is
-#'   stored at \code{seurat_obj@misc$n_dims} for later reference.
+#'   stored at \code{seurat_obj@misc$n_dims} for later reference. With
+#'   \code{cluster = TRUE}, also the \code{"<assay>_nn"}/\code{"<assay>_snn"}
+#'   graphs and one cluster column per resolution (column prefix stored at
+#'   \code{seurat_obj@misc$cluster_prefix}).
 #'
 #' @examples
 #' \dontrun{
 #' seurat_obj <- SeuratPipeline(seurat_obj)
 #' seurat_obj <- SeuratPipeline(seurat_obj, custom_pca = 10)
+#' seurat_obj <- SeuratPipeline(seurat_obj, resolutions = c(0.1, 0.3, 0.5))
 #' }
 #'
 #' @export
@@ -750,6 +761,8 @@ SeuratPipeline <- function(
     reduction.name = "umap_harmony",
     reduction.key = "Harmony_",
     custom_pca = NULL,
+    cluster = TRUE,
+    resolutions = seq(0.1, 1, 0.1),
     verbose = TRUE
 ) {
   if (!sample_col %in% colnames(seurat_obj@meta.data)) {
@@ -768,6 +781,11 @@ SeuratPipeline <- function(
   # RunPCA()'s `npcs`) and fail deep inside irlba with the opaque "non-numeric
   # argument to binary operator" (from `nv + 7`). Reject non-numeric input here
   # -- strings are NOT silently coerced.
+  if (isTRUE(cluster) && (!is.numeric(resolutions) || !length(resolutions) ||
+                          anyNA(resolutions) || any(resolutions <= 0))) {
+    stop("`resolutions` must be a numeric vector of positive values, e.g. seq(0.1, 1, 0.1).")
+  }
+
   if (!is.null(custom_pca)) {
     if (!is.numeric(custom_pca) || length(custom_pca) != 1 || is.na(custom_pca) || custom_pca < 1) {
       stop("`custom_pca` must be a single positive number (numeric, unquoted -- ",
@@ -834,6 +852,37 @@ SeuratPipeline <- function(
     reduction.key  = reduction.key,
     verbose        = FALSE
   )
+
+  # Clustering on the same integrated reduction and the same n_dims as the
+  # integration/UMAP above, at every requested resolution.
+  if (isTRUE(cluster)) {
+    graph <- paste0(assay, "_snn")
+    if (verbose) {
+      message("Clustering (", new.reduction, ", dims 1:", n_dims, ") at resolution(s): ",
+              paste(resolutions, collapse = ", "))
+    }
+    seurat_obj <- Seurat::FindNeighbors(
+      seurat_obj,
+      reduction  = new.reduction,
+      dims       = 1:n_dims,
+      graph.name = c(paste0(assay, "_nn"), graph),
+      verbose    = FALSE
+    )
+    seurat_obj <- Seurat::FindClusters(
+      seurat_obj,
+      graph.name = graph,
+      resolution = resolutions,
+      verbose    = FALSE
+    )
+    seurat_obj@misc$cluster_prefix <- paste0(graph, "_res.")
+    if (verbose) {
+      cols <- intersect(paste0(seurat_obj@misc$cluster_prefix, resolutions),
+                        colnames(seurat_obj@meta.data))
+      n_cl <- vapply(cols, function(cl) length(unique(seurat_obj@meta.data[[cl]])), integer(1))
+      message("Clusters per resolution: ",
+              paste0(sub(".*_res\\.", "", cols), " = ", n_cl, collapse = ", "))
+    }
+  }
 
   seurat_obj@misc$n_dims <- n_dims
   seurat_obj

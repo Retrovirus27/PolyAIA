@@ -17,5 +17,8 @@ utils::globalVariables(c(
   # RED quantifiability columns (R/3_PolyAAnalysis.R)
   "p_reads_treatment", "p_reads_control", "d_reads_treatment", "d_reads_control",
   "p_usage", "d_usage", "rep_pairs_frac",
-  "ok_reads", "ok_usage", "ok_replicates", "quantifiable"
+  "ok_reads", "ok_usage", "ok_replicates", "quantifiable",
+  # ClusterComposition / FlagContaminants (R/6_Clustering.R)
+  "cluster", "celltype", "n", "expected", "contaminant", "contaminants",
+  "cells", "kept_prot"
 ))
