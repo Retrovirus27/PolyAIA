@@ -243,19 +243,41 @@ CleanPolyAMetadata <- function(
 #' Filter and Standardize Genomic Peaks Across Samples
 #'
 #' This function standardizes peaks across all samples by creating a unified peak set,
-#' reducing overlaps, and counting sample representation. It also generates visualization
-#' plots showing peak distribution across samples.
+#' reducing overlaps, and counting sample representation. Optionally keeps only
+#' peaks whose polyA_DB site belongs to given gene biotypes (e.g.
+#' \code{"protein_coding"}). It also generates visualization plots showing peak
+#' distribution across samples.
 #'
 #' @param polyA.assays A list or collection of assay objects containing genomic ranges.
 #'   Each element should be compatible with \code{GenomicRanges::granges()}.
 #' @param multiple_samples set TRUE if multiple studies are analyzed together.
+#' @param polyAdb.file Path to the polyA_DB table (e.g. \code{"polyAdb_mm10.txt"},
+#'   the same file given to \code{PASTA::GetPolyADbAnnotation()}). Needed when
+#'   \code{biotypes} is set, unless \code{polyAdb} is given.
+#' @param polyAdb The polyA_DB table already read into R (alternative to
+#'   \code{polyAdb.file}). Must have \code{hg38_Chromosome_format},
+#'   \code{hg38_Position}, \code{Strand} and \code{biotype_col}.
+#' @param biotypes Character vector of gene biotypes to keep (values of
+#'   \code{biotype_col}), e.g. \code{"protein_coding"} or
+#'   \code{c("protein_coding", "lncRNA")}. \code{NULL} (default) = no filter.
+#' @param biotype_col Column of the polyA_DB table holding the biotype. Default
+#'   \code{"gene_biotype"}.
+#' @param max.dist Maximum distance (nt) between a peak's 3' end and its
+#'   polyA_DB site. Default \code{50}, as in \code{PASTA::GetPolyADbAnnotation()};
+#'   use the same value there.
+#' @param plot Logical. Print the diagnostic plots. Default \code{TRUE}.
+#' @param verbose Logical. Print the biotype-filter summary. Default \code{TRUE}.
 #'
-#' @return A list with two elements:
+#' @return A list with:
 #'   \describe{
 #'     \item{Ranges}{A \code{GRanges} object containing the unified peak set after
-#'       reducing overlaps across all samples (strand-aware).}
+#'       reducing overlaps across all samples (strand-aware); only the kept peaks
+#'       when \code{biotypes} is set.}
 #'     \item{CommonPeaks}{An integer vector indicating the number of samples that
-#'       overlap with each peak in the unified set.}
+#'       overlap with each peak in \code{Ranges}.}
+#'     \item{Audit}{With \code{biotypes} set: one row per unified peak BEFORE
+#'       filtering (\code{peak}, \code{n_samples}, \code{distance} to the nearest
+#'       polyA_DB site, \code{biotype}, \code{kept}); otherwise \code{NULL}.}
 #'   }
 #'
 #' @details
@@ -264,6 +286,7 @@ CleanPolyAMetadata <- function(
 #'   \item Extracts all GRanges from individual assays
 #'   \item Creates a unified peak set by reducing overlapping ranges (strand-aware)
 #'   \item Counts how many samples each peak appears in
+#'   \item Optionally filters by gene biotype (see below)
 #'   \item Generates two diagnostic plots:
 #'     \itemize{
 #'       \item Number of peaks per sample (bar plot)
@@ -271,9 +294,15 @@ CleanPolyAMetadata <- function(
 #'     }
 #' }
 #'
+#' Biotype filter: each unified peak is matched to polyA_DB with the same rule
+#' as \code{PASTA::GetPolyADbAnnotation()} -- the peak's 3' end (strand-aware
+#' cleavage point), the nearest polyA_DB site on the same strand, accepted if
+#' within \code{max.dist} -- so a kept peak later receives exactly the
+#' annotation it was filtered on. Peaks without a polyA_DB site within
+#' \code{max.dist} have no biotype and are removed by the filter.
+#'
 #' @note The function prints combined plots to the current graphics device.
 #'   Requires the \code{patchwork} package for plot combination (using \code{|} operator).
-#'   A theme object \code{th} must be defined in the global environment.
 #'
 #' @examples
 #' \dontrun{
@@ -281,6 +310,12 @@ CleanPolyAMetadata <- function(
 #' results <- FilterPeaks(my_polyA_assays)
 #' unified_peaks <- results$Ranges
 #' sample_counts <- results$CommonPeaks
+#'
+#' # Only peaks at protein-coding polyA_DB sites
+#' results_pc <- FilterPeaks(my_polyA_assays, multiple_samples = TRUE,
+#'                           polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
+#'                           biotypes = "protein_coding", max.dist = 50)
+#' table(results_pc$Audit$biotype, useNA = "ifany")
 #' }
 #'
 #' @importFrom GenomicRanges granges reduce countOverlaps GRangesList
@@ -289,7 +324,15 @@ CleanPolyAMetadata <- function(
 #' @importFrom scales comma
 #'
 #' @export
-FilterPeaks <- function(polyA.assays, multiple_samples = NULL){
+FilterPeaks <- function(polyA.assays,
+                        multiple_samples = NULL,
+                        polyAdb.file     = NULL,
+                        polyAdb          = NULL,
+                        biotypes         = NULL,
+                        biotype_col      = "gene_biotype",
+                        max.dist         = 50,
+                        plot             = TRUE,
+                        verbose          = TRUE) {
   # Before merging, standardize peaks across all samples
   # 1. Extract all GRanges from individual assays
   all.ranges <- lapply(polyA.assays, GenomicRanges::granges)
@@ -309,43 +352,119 @@ FilterPeaks <- function(polyA.assays, multiple_samples = NULL){
     peak_sample_counts <- GenomicRanges::countOverlaps(unified.peaks, unified.ranges, ignore.strand = FALSE)
   }
 
-  # Number of peaks per sample
-  samples <- names(polyA.assays)
-  Sample_peaks <-
-    data.frame(sample = samples, n_peaks = sapply(polyA.assays, function(x) length(granges(x)))) %>%
-    ggplot2::ggplot(ggplot2::aes(x = sample, y = n_peaks)) +
-    ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
-    ggplot2::labs(
-      title = "Peaks Across Samples",
-      x = NULL,
-      y = "Number of Peaks" ) +
-    th +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
-    ggplot2::scale_y_continuous(
-      labels = scales::comma,
-      n.breaks = 6 )
-  # Number of peaks shared by sample
-  Sample_shared <-
-    data.frame(peak_sample_counts) %>%
-    dplyr::count(peak_sample_counts) %>%
-    ggplot2::ggplot(ggplot2::aes(x = peak_sample_counts, y = n)) +
-    ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
-    ggplot2::labs(
-      title = "Common peaks Across Samples",
-      x = "Number of Samples",
-      y = "Number of Peaks" ) +
-    ggplot2::scale_x_continuous(breaks = 1:max(peak_sample_counts)) +
-    th +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
-    ggplot2::scale_y_continuous(
-      labels = scales::comma,
-      n.breaks = 6  )
+  # 3. Optional gene-biotype filter via polyA_DB (same matching rule as
+  #    PASTA::GetPolyADbAnnotation(): peak 3' end -> nearest same-strand
+  #    polyA_DB site, accepted within max.dist).
+  audit <- NULL
+  if (!is.null(biotypes)) {
+    if (!is.numeric(max.dist) || length(max.dist) != 1 || is.na(max.dist) || max.dist < 0) {
+      stop("`max.dist` must be a single number >= 0 (nt), e.g. 50 as in GetPolyADbAnnotation().")
+    }
+    if (is.null(polyAdb)) {
+      if (is.null(polyAdb.file) || !file.exists(polyAdb.file)) {
+        stop("Give `polyAdb.file` (existing path) or `polyAdb` when `biotypes` is set.")
+      }
+      polyAdb <- utils::read.delim(polyAdb.file, stringsAsFactors = FALSE)
+    }
+    need <- c("hg38_Chromosome_format", "hg38_Position", "Strand", biotype_col)
+    miss <- setdiff(need, colnames(polyAdb))
+    if (length(miss)) stop("polyA_DB table lacks column(s): ", paste(miss, collapse = ", "))
 
-  # Display plots side by side - FOR R MARKDOWN
-  combined_plot <- Sample_peaks | Sample_shared
-  print(combined_plot)
+    db <- GenomicRanges::makeGRangesFromDataFrame(
+      polyAdb, keep.extra.columns = FALSE,
+      seqnames.field = "hg38_Chromosome_format",
+      start.field = "hg38_Position", end.field = "hg38_Position",
+      strand.field = "Strand")
+    db_biotype <- as.character(polyAdb[[biotype_col]])
 
-  return(list(Ranges=unified.peaks, CommonPeaks=peak_sample_counts))
+    if ("*" %in% as.character(GenomicRanges::strand(unified.peaks))) {
+      stop("Unstranded peaks found; cannot match polyA_DB strand-aware.")
+    }
+    # chromosome naming (chr1 vs 1), as in GetPolyADbAnnotation()
+    if (!all(GenomeInfoDb::seqlevelsStyle(unified.peaks) %in% GenomeInfoDb::seqlevelsStyle(db))) {
+      GenomeInfoDb::seqlevelsStyle(db) <- GenomeInfoDb::seqlevelsStyle(unified.peaks)[1]
+    }
+
+    # cleavage point = 3' end of the peak (strand-aware), width 1
+    cleavage <- GenomicRanges::resize(unified.peaks, width = 1, fix = "end")
+    ol <- suppressWarnings(GenomicRanges::distanceToNearest(cleavage, db, ignore.strand = FALSE))
+    q  <- S4Vectors::queryHits(ol)
+    s  <- S4Vectors::subjectHits(ol)
+    d  <- S4Vectors::mcols(ol)$distance
+
+    n_all <- length(unified.peaks)
+    dist  <- rep(NA_integer_, n_all); dist[q] <- d
+    bt    <- rep(NA_character_, n_all)
+    ok    <- d <= max.dist
+    bt[q[ok]] <- db_biotype[s[ok]]
+
+    keep <- bt %in% biotypes
+    audit <- data.frame(
+      peak      = paste(GenomicRanges::seqnames(unified.peaks), GenomicRanges::start(unified.peaks),
+                        GenomicRanges::end(unified.peaks), GenomicRanges::strand(unified.peaks),
+                        sep = "-"),
+      n_samples = as.integer(peak_sample_counts),
+      distance  = dist,
+      biotype   = bt,
+      kept      = keep,
+      stringsAsFactors = FALSE
+    )
+
+    if (verbose) {
+      message(sprintf(
+        "Biotype filter {%s} (polyA_DB site within %s nt of the peak 3' end):\n  %d unified peaks\n  %d without a polyA_DB site within %s nt\n  %d at a site of another biotype\n  %d kept (%.1f%%)",
+        paste(biotypes, collapse = ", "), max.dist, n_all, sum(is.na(bt)), max.dist,
+        sum(!is.na(bt) & !keep), sum(keep), 100 * mean(keep)))
+      tb <- sort(table(bt, useNA = "no"), decreasing = TRUE)
+      message("  Biotypes of matched peaks: ",
+              paste0(names(tb)[seq_len(min(8, length(tb)))], " = ",
+                     tb[seq_len(min(8, length(tb)))], collapse = ", "))
+    }
+
+    unified.peaks      <- unified.peaks[keep]
+    peak_sample_counts <- peak_sample_counts[keep]
+  }
+
+  if (isTRUE(plot)) {
+    # Number of peaks per sample
+    samples <- names(polyA.assays)
+    Sample_peaks <-
+      data.frame(sample = samples, n_peaks = sapply(polyA.assays, function(x) length(granges(x)))) %>%
+      ggplot2::ggplot(ggplot2::aes(x = sample, y = n_peaks)) +
+      ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
+      ggplot2::labs(
+        title = "Peaks Across Samples",
+        x = NULL,
+        y = "Number of Peaks" ) +
+      th +
+      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
+      ggplot2::scale_y_continuous(
+        labels = scales::comma,
+        n.breaks = 6 )
+    # Number of peaks shared by sample
+    Sample_shared <-
+      data.frame(peak_sample_counts) %>%
+      dplyr::count(peak_sample_counts) %>%
+      ggplot2::ggplot(ggplot2::aes(x = peak_sample_counts, y = n)) +
+      ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
+      ggplot2::labs(
+        title = if (is.null(biotypes)) "Common peaks Across Samples"
+                else paste0("Common peaks Across Samples (", paste(biotypes, collapse = ", "), ")"),
+        x = "Number of Samples",
+        y = "Number of Peaks" ) +
+      ggplot2::scale_x_continuous(breaks = 1:max(peak_sample_counts)) +
+      th +
+      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
+      ggplot2::scale_y_continuous(
+        labels = scales::comma,
+        n.breaks = 6  )
+
+    # Display plots side by side - FOR R MARKDOWN
+    combined_plot <- Sample_peaks | Sample_shared
+    print(combined_plot)
+  }
+
+  return(list(Ranges = unified.peaks, CommonPeaks = peak_sample_counts, Audit = audit))
 }
 
 #' Requantify PolyA Assays Using Unified Peaks

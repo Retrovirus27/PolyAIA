@@ -82,6 +82,13 @@ ClusterTree <- function(seurat_obj,
     on.exit(rm("getMode", envir = genv), add = TRUE)
   }
 
+  # A factor label column comes out as its integer codes (1, 2, 3...) on the
+  # nodes, so labels are passed as text (only in this local copy).
+  if (!is.null(node_label) && node_label %in% colnames(seurat_obj@meta.data) &&
+      is.factor(seurat_obj@meta.data[[node_label]])) {
+    seurat_obj@meta.data[[node_label]] <- as.character(seurat_obj@meta.data[[node_label]])
+  }
+
   clustree::clustree(seurat_obj,
                      prefix           = prefix,
                      node_colour      = node_colour,
