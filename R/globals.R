@@ -20,5 +20,7 @@ utils::globalVariables(c(
   "ok_reads", "ok_usage", "ok_replicates", "quantifiable",
   # ClusterComposition / FlagContaminants (R/6_Clustering.R)
   "cluster", "celltype", "n", "expected", "contaminant", "contaminants",
-  "cells", "kept_prot"
+  "cells", "kept_prot",
+  # FilterPeaks per-sample summary (R/3_PolyAAnalysis.R)
+  "location", "biotype", "kept"
 ))

@@ -223,9 +223,12 @@ Default \code{0.9}.}
 \item{return_filter}{Logical. Also return \code{$filter}, with the same
 structure as \code{PseudobulkFilter()} so it can be passed to
 \code{QCDensity()}: the pseudobulk counts each (cell type x comparison)
-block filtered (\code{$pseudobulk}, \code{$sample_meta}), the peaks each
-block saw (\code{$tested}) and kept (\code{$kept}), and \code{$summary}
-(peaks in / kept, status). \code{n_cells} is not available here (NA).
+block filtered (\code{$pseudobulk}, \code{$sample_meta} with
+\code{replicate} and \code{n_cells} per pseudobulk sample), the peaks
+entering DEPsMatrix before PASTA (\code{$input}), the peaks each block saw
+after PASTA (\code{$tested}) and kept after the expression filter
+(\code{$kept}), and \code{$summary} (peaks in / kept, status). Plot the
+three stages with \code{QCDensity(stage = "input" / "before" / "after")}.
 Default \code{FALSE}.}
 
 \item{return_seurat}{Logical. The result is always a list with
@@ -258,10 +261,15 @@ A combined \code{data.frame} of RED scores across all cell types and
   \code{ok_replicates}, and \code{quantifiable} (all three \code{TRUE}).
 
   Always returns a \strong{list}: \code{$red_scores} (the RED table above,
-  suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb} (the
-  analyzed peak-level table -- one row per peak, TE handling applied, with a
-  \code{Repeated_Masker} flag -- suitable as \code{PolyAPlot()}'s
-  \code{polyAdb}). With \code{return_seurat = TRUE} the list also has
+  suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb}
+  (the analyzed sites, TE handling applied, with a \code{Repeated_Masker}
+  flag -- suitable as \code{PolyAPlot()}'s \code{polyAdb}). With
+  \code{Pasta = TRUE}, \code{$polyAdb} holds the full PASTA results: one row
+  per peak x cell type (\code{CellType}) x comparison (\code{Condition}) with
+  the \code{DEPolyAPeaks()} statistics (\code{Estimate}, \code{p.value},
+  \code{p_val_adj}, \code{percent.1}, \code{percent.2}) plus the peak/gene
+  annotation. With \code{Pasta = FALSE}, it is the plain peak-level table,
+  one row per peak. With \code{return_seurat = TRUE} the list also has
   \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object;
   with \code{exclude_peaks = TRUE}, \code{$peak_audit}; with
   \code{return_filter = TRUE}, \code{$filter}.

@@ -6,7 +6,7 @@
 \usage{
 QCDensity(
   filter,
-  stage = c("before", "after"),
+  stage = c("before", "after", "input"),
   condition = NULL,
   cells = NULL,
   color_by = "Cells",
@@ -31,7 +31,8 @@ QCDensity(
 \item{filter}{The \code{filter} element of \code{\link{DEGsMatrix}(return_filter = TRUE)}
 or the output of \code{\link{PseudobulkFilter}()}.}
 
-\item{stage}{\code{"before"} or \code{"after"} the expression filter.}
+\item{stage}{\code{"before"} or \code{"after"} the expression filter, or
+\code{"input"} (DEPsMatrix filter only: all peaks before PASTA).}
 
 \item{condition}{One or more \code{Condition} labels. \code{NULL} = all
 (samples shared between comparisons, such as a common control, are then
@@ -62,7 +63,8 @@ plotted samples, so zeros of every cell type fall at the same x.
 \code{"block"}: mean within each block (the zero peak then shifts right
 for cell types with small libraries).}
 
-\item{title}{Plot title. \code{NULL} = "Before/After filtering (Genes/Peaks)".}
+\item{title}{Plot title. \code{NULL} = "Before/After filtering (Genes/Peaks)"
+(or "Before PASTA" / "After PASTA, before filtering" for the DEPsMatrix filter).}
 
 \item{subtitle}{Optional subtitle. Default none.}
 
@@ -92,6 +94,10 @@ A \code{ggplot} object.
 Plots, for every tested cell type x comparison block, the log-CPM density of
 each pseudobulk sample, either for all features entering the filter
 (\code{stage = "before"}) or for the retained ones (\code{stage = "after"}).
+For the \code{DEPsMatrix()} filter, \code{stage = "input"} shows every peak
+entering DEPsMatrix before PASTA; there "before" is the set left after PASTA
+(the peaks each block tested) and "after" the set left after the expression
+filter.
 Works for genes and peaks alike (the \code{filter} object of
 \code{\link{DEGsMatrix}()} or \code{\link{PseudobulkFilter}()}).
 }

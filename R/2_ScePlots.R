@@ -1178,6 +1178,10 @@ ClusterPlots <- function(object,
 #' Plots, for every tested cell type x comparison block, the log-CPM density of
 #' each pseudobulk sample, either for all features entering the filter
 #' (\code{stage = "before"}) or for the retained ones (\code{stage = "after"}).
+#' For the \code{DEPsMatrix()} filter, \code{stage = "input"} shows every peak
+#' entering DEPsMatrix before PASTA; there "before" is the set left after PASTA
+#' (the peaks each block tested) and "after" the set left after the expression
+#' filter.
 #' Works for genes and peaks alike (the \code{filter} object of
 #' \code{\link{DEGsMatrix}()} or \code{\link{PseudobulkFilter}()}).
 #'
@@ -1188,7 +1192,8 @@ ClusterPlots <- function(object,
 #'
 #' @param filter The \code{filter} element of \code{\link{DEGsMatrix}(return_filter = TRUE)}
 #'   or the output of \code{\link{PseudobulkFilter}()}.
-#' @param stage \code{"before"} or \code{"after"} the expression filter.
+#' @param stage \code{"before"} or \code{"after"} the expression filter, or
+#'   \code{"input"} (DEPsMatrix filter only: all peaks before PASTA).
 #' @param condition One or more \code{Condition} labels. \code{NULL} = all
 #'   (samples shared between comparisons, such as a common control, are then
 #'   drawn once per comparison).
@@ -1209,7 +1214,8 @@ ClusterPlots <- function(object,
 #'   plotted samples, so zeros of every cell type fall at the same x.
 #'   \code{"block"}: mean within each block (the zero peak then shifts right
 #'   for cell types with small libraries).
-#' @param title Plot title. \code{NULL} = "Before/After filtering (Genes/Peaks)".
+#' @param title Plot title. \code{NULL} = "Before/After filtering (Genes/Peaks)"
+#'   (or "Before PASTA" / "After PASTA, before filtering" for the DEPsMatrix filter).
 #' @param subtitle Optional subtitle. Default none.
 #' @param n_label Label in the top corner of each panel, one line per
 #'   cell type: \code{"features"} (default, number of genes/peaks plotted -- compare
@@ -1241,7 +1247,7 @@ ClusterPlots <- function(object,
 #' @importFrom rlang .data
 #' @export
 QCDensity <- function(filter,
-                      stage             = c("before", "after"),
+                      stage             = c("before", "after", "input"),
                       condition         = NULL,
                       cells             = NULL,
                       color_by          = "Cells",
@@ -1267,6 +1273,10 @@ QCDensity <- function(filter,
 
   need <- c("pseudobulk", "sample_meta", "kept", "summary", "feature_type")
   miss <- setdiff(need, names(filter))
+  if (stage == "input" && is.null(filter$input)) {
+    stop("stage = \"input\" needs the DEPsMatrix(return_filter = TRUE)$filter ",
+         "(it holds the peaks before PASTA). For DEGsMatrix/PseudobulkFilter use \"before\".")
+  }
   if (length(miss)) {
     stop("`filter` is missing element(s): ", paste(miss, collapse = ", "),
          ". Pass DEGsMatrix()/DEPsMatrix(return_filter = TRUE)$filter or PseudobulkFilter().")
@@ -1295,7 +1305,10 @@ QCDensity <- function(filter,
   mats <- lapply(seq_len(nrow(blocks)), function(i) {
     b <- blocks[i, ]
     s <- sm[sm$Cells == b$Cells & sm$label %in% c(b$treatment, b$control), , drop = FALSE]
-    feats <- if (stage == "before") {
+    feats <- if (stage == "input") {
+      # every peak entering DEPsMatrix (before PASTA), same for all blocks
+      filter$input
+    } else if (stage == "before") {
       # DEPsMatrix()'s filter records the peaks each block saw before the
       # filter; PseudobulkFilter() tests every feature of the pseudobulk.
       if (!is.null(filter$tested)) {
@@ -1420,8 +1433,12 @@ QCDensity <- function(filter,
   }
 
   if (is.null(title)) {
-    title <- sprintf("%s filtering (%ss)",
-                     if (stage == "before") "Before" else "After",
+    is_deps <- !is.null(filter$input)
+    title <- sprintf("%s (%ss)",
+                     switch(stage,
+                            input  = "Before PASTA",
+                            before = if (is_deps) "After PASTA, before filtering" else "Before filtering",
+                            after  = "After filtering"),
                      tools::toTitleCase(ft))
   }
 

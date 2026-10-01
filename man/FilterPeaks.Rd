@@ -11,6 +11,7 @@ FilterPeaks(
   polyAdb = NULL,
   biotypes = NULL,
   biotype_col = "gene_biotype",
+  location_col = "Intron.exon.location",
   max.dist = 50,
   plot = TRUE,
   verbose = TRUE
@@ -24,7 +25,9 @@ Each element should be compatible with \code{GenomicRanges::granges()}.}
 
 \item{polyAdb.file}{Path to the polyA_DB table (e.g. \code{"polyAdb_mm10.txt"},
 the same file given to \code{PASTA::GetPolyADbAnnotation()}). Needed when
-\code{biotypes} is set, unless \code{polyAdb} is given.}
+\code{biotypes} is set, unless \code{polyAdb} is given. When given (even
+without \code{biotypes}), every peak is annotated with biotype and
+location (\code{PeakMeta}, \code{SampleSummary}).}
 
 \item{polyAdb}{The polyA_DB table already read into R (alternative to
 \code{polyAdb.file}). Must have \code{hg38_Chromosome_format},
@@ -36,6 +39,9 @@ the same file given to \code{PASTA::GetPolyADbAnnotation()}). Needed when
 
 \item{biotype_col}{Column of the polyA_DB table holding the biotype. Default
 \code{"gene_biotype"}.}
+
+\item{location_col}{Column of the polyA_DB table holding the genomic location
+of the site. Default \code{"Intron.exon.location"}.}
 
 \item{max.dist}{Maximum distance (nt) between a peak's 3' end and its
 polyA_DB site. Default \code{50}, as in \code{PASTA::GetPolyADbAnnotation()};
@@ -53,9 +59,15 @@ A list with:
       when \code{biotypes} is set.}
     \item{CommonPeaks}{An integer vector indicating the number of samples that
       overlap with each peak in \code{Ranges}.}
-    \item{Audit}{With \code{biotypes} set: one row per unified peak BEFORE
-      filtering (\code{peak}, \code{n_samples}, \code{distance} to the nearest
-      polyA_DB site, \code{biotype}, \code{kept}); otherwise \code{NULL}.}
+    \item{PeakMeta}{When a polyA_DB is given: one row per unified peak,
+      ALL of them (before filtering): \code{peak}, \code{n_samples},
+      \code{distance} to the nearest polyA_DB site, \code{biotype},
+      \code{location}, \code{kept}. \code{NULL} otherwise.}
+    \item{SampleSummary}{Peaks per sample. With a polyA_DB: counts per
+      \code{sample} x \code{location} x \code{biotype} x \code{kept} (each
+      original peak inherits the annotation of its unified peak); without:
+      \code{sample}, \code{n}.}
+    \item{Audit}{Same as \code{PeakMeta} (kept for compatibility).}
   }
 }
 \description{
@@ -79,12 +91,13 @@ The function performs the following steps:
     }
 }
 
-Biotype filter: each unified peak is matched to polyA_DB with the same rule
-as \code{PASTA::GetPolyADbAnnotation()} -- the peak's 3' end (strand-aware
-cleavage point), the nearest polyA_DB site on the same strand, accepted if
-within \code{max.dist} -- so a kept peak later receives exactly the
-annotation it was filtered on. Peaks without a polyA_DB site within
-\code{max.dist} have no biotype and are removed by the filter.
+Annotation and biotype filter: each unified peak is matched to polyA_DB with
+the same rule as \code{\link{AnnotatePolyADb}()} -- the peak's 3' end, the
+nearest polyA_DB site on the same strand within \code{max.dist}, and a fixed
+choice when several polyA_DB rows are equally near. Annotate the Seurat
+object with \code{AnnotatePolyADb()} (same file and \code{max.dist}) and
+every peak gets the same annotation in both. Peaks without a polyA_DB site
+within \code{max.dist} have no biotype and are removed by the filter.
 }
 \note{
 The function prints combined plots to the current graphics device.

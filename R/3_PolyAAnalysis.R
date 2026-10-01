@@ -240,6 +240,143 @@ CleanPolyAMetadata <- function(
   return(obj)
 }
 
+#' Match peaks to polyA_DB sites (internal, shared by FilterPeaks and AnnotatePolyADb)
+#'
+#' Same rule as \code{PASTA::GetPolyADbAnnotation()} -- the peak's 3' end
+#' (strand-aware cleavage point), the nearest polyA_DB site on the same strand,
+#' accepted if within \code{max.dist} -- but with a FIXED choice when several
+#' polyA_DB rows are equally near (the same site is often listed once per gene):
+#' prefer a row with a non-empty \code{location_col}, then the first row of the
+#' table. PASTA picks one of them arbitrarily, which is not reproducible between
+#' two annotations.
+#' @return data.frame aligned with \code{ranges}: \code{row} (index into
+#'   \code{polyAdb}, NA if no site within \code{max.dist}), \code{distance}.
+#' @noRd
+.MatchPolyADb <- function(ranges, polyAdb, max.dist = 50,
+                          location_col = "Intron.exon.location") {
+  need <- c("hg38_Chromosome_format", "hg38_Position", "Strand")
+  miss <- setdiff(need, colnames(polyAdb))
+  if (length(miss)) stop("polyA_DB table lacks column(s): ", paste(miss, collapse = ", "))
+  if (!is.numeric(max.dist) || length(max.dist) != 1 || is.na(max.dist) || max.dist < 0) {
+    stop("`max.dist` must be a single number >= 0 (nt).")
+  }
+
+  db <- GenomicRanges::GRanges(
+    seqnames = as.character(polyAdb$hg38_Chromosome_format),
+    ranges   = IRanges::IRanges(start = as.integer(polyAdb$hg38_Position), width = 1L),
+    strand   = as.character(polyAdb$Strand))
+  # chromosome naming (chr1 vs 1), as in GetPolyADbAnnotation()
+  if (!all(GenomeInfoDb::seqlevelsStyle(ranges) == GenomeInfoDb::seqlevelsStyle(db))) {
+    GenomeInfoDb::seqlevelsStyle(db) <-
+      if (GenomeInfoDb::seqlevelsStyle(ranges)[1] == "UCSC") "UCSC" else "Ensembl"
+  }
+
+  cleavage <- GenomicRanges::resize(ranges, width = 1, fix = "end")   # 3' end
+  hits <- suppressWarnings(GenomicRanges::findOverlaps(cleavage, db, maxgap = max.dist,
+                                                       ignore.strand = FALSE))
+  q <- S4Vectors::queryHits(hits)
+  s <- S4Vectors::subjectHits(hits)
+  d <- GenomicRanges::distance(cleavage[q], db[s], ignore.strand = FALSE)
+  ok <- !is.na(d) & d <= max.dist
+  q <- q[ok]; s <- s[ok]; d <- d[ok]
+
+  has_loc <- if (location_col %in% colnames(polyAdb)) {
+    l <- as.character(polyAdb[[location_col]])[s]
+    !is.na(l) & nzchar(l)
+  } else rep(TRUE, length(s))
+
+  # per peak: nearest distance, then non-empty location, then first table row
+  o <- order(q, d, !has_loc, s)
+  q <- q[o]; s <- s[o]; d <- d[o]
+  first <- !duplicated(q)
+
+  out <- data.frame(row = rep(NA_integer_, length(ranges)),
+                    distance = rep(NA_integer_, length(ranges)))
+  out$row[q[first]]      <- s[first]
+  out$distance[q[first]] <- as.integer(d[first])
+  out
+}
+
+#' Annotate polyA sites with polyA_DB (reproducible GetPolyADbAnnotation)
+#'
+#' Drop-in replacement for \code{PASTA::GetPolyADbAnnotation()}: matches each
+#' polyA site (feature) of \code{assay} to polyA_DB and writes the matched
+#' site's columns into the assay's \code{meta.features}, with the same columns
+#' PASTA adds (\code{seqnames}, \code{start}, \code{end}, \code{width},
+#' \code{strand}, \code{peak}, plus the polyA_DB columns, e.g.
+#' \code{Intron.exon.location}, \code{ensembl_gene_id}, \code{Gene_Symbol},
+#' \code{hg38_Position}). The match is PASTA's (the site's 3' end, nearest
+#' polyA_DB site on the same strand, within \code{max.dist}), but when several
+#' polyA_DB rows are equally near -- the same site listed once per gene -- the
+#' choice is fixed (a row with a non-empty \code{location_col} first, then the
+#' first row of the table) instead of arbitrary. \code{FilterPeaks()} uses the
+#' same rule, so both always agree.
+#'
+#' @param seu Seurat object with a polyA assay.
+#' @param polyAdb.file Path to the polyA_DB table (e.g. \code{"polyAdb_mm10.txt"}).
+#' @param assay polyA assay name. Default \code{"polyA"}.
+#' @param max.dist Maximum distance (nt) between the site's 3' end and the
+#'   polyA_DB site. Default \code{50}.
+#' @param location_col polyA_DB column with the site location (used to break
+#'   ties). Default \code{"Intron.exon.location"}.
+#' @param verbose Print a summary. Default \code{TRUE}.
+#'
+#' @return \code{seu} with the annotation in \code{seu[[assay]]@meta.features}.
+#'   Features without a polyA_DB site within \code{max.dist} get \code{NA}.
+#'
+#' @examples
+#' \dontrun{
+#' seurat_obj <- AnnotatePolyADb(seurat_obj, polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
+#'                               max.dist = 50)
+#' table(seurat_obj[["polyA"]]@meta.features$Intron.exon.location, useNA = "ifany")
+#' }
+#'
+#' @export
+AnnotatePolyADb <- function(seu,
+                            polyAdb.file,
+                            assay        = "polyA",
+                            max.dist     = 50,
+                            location_col = "Intron.exon.location",
+                            verbose      = TRUE) {
+  if (!assay %in% SeuratObject::Assays(seu)) stop("Assay '", assay, "' not found in `seu`.")
+  if (missing(polyAdb.file) || !file.exists(polyAdb.file)) {
+    stop("`polyAdb.file` not found.")
+  }
+  a  <- seu[[assay]]
+  rg <- methods::slot(a, "ranges")
+  if ("*" %in% as.character(GenomicRanges::strand(rg))) {
+    stop("Cannot annotate unstranded polyA sites; remove sites with strand '*'.")
+  }
+  if (verbose) message("Reading polyA_DB: ", polyAdb.file)
+  polyAdb <- utils::read.table(file = polyAdb.file, header = TRUE)
+
+  m <- .MatchPolyADb(rg, polyAdb, max.dist = max.dist, location_col = location_col)
+
+  # same columns as PASTA::GetPolyADbAnnotation()
+  ann <- data.frame(
+    seqnames = as.character(GenomicRanges::seqnames(rg)),
+    start    = GenomicRanges::start(rg),
+    end      = GenomicRanges::end(rg),
+    width    = GenomicRanges::width(rg),
+    strand   = as.character(GenomicRanges::strand(rg)),
+    peak     = rownames(a),
+    stringsAsFactors = FALSE
+  )
+  db_cols <- setdiff(colnames(polyAdb), c("hg38_Chromosome_format", "Strand"))
+  for (cl in db_cols) ann[[cl]] <- polyAdb[[cl]][m$row]
+
+  mf <- a@meta.features
+  for (cl in colnames(ann)) mf[[cl]] <- ann[[cl]]
+  a@meta.features <- mf
+  seu[[assay]] <- a
+
+  if (verbose) {
+    message("AnnotatePolyADb: ", sum(!is.na(m$row)), " of ", length(m$row),
+            " sites matched a polyA_DB site within ", max.dist, " nt.")
+  }
+  seu
+}
+
 #' Filter and Standardize Genomic Peaks Across Samples
 #'
 #' This function standardizes peaks across all samples by creating a unified peak set,
@@ -253,7 +390,9 @@ CleanPolyAMetadata <- function(
 #' @param multiple_samples set TRUE if multiple studies are analyzed together.
 #' @param polyAdb.file Path to the polyA_DB table (e.g. \code{"polyAdb_mm10.txt"},
 #'   the same file given to \code{PASTA::GetPolyADbAnnotation()}). Needed when
-#'   \code{biotypes} is set, unless \code{polyAdb} is given.
+#'   \code{biotypes} is set, unless \code{polyAdb} is given. When given (even
+#'   without \code{biotypes}), every peak is annotated with biotype and
+#'   location (\code{PeakMeta}, \code{SampleSummary}).
 #' @param polyAdb The polyA_DB table already read into R (alternative to
 #'   \code{polyAdb.file}). Must have \code{hg38_Chromosome_format},
 #'   \code{hg38_Position}, \code{Strand} and \code{biotype_col}.
@@ -262,6 +401,8 @@ CleanPolyAMetadata <- function(
 #'   \code{c("protein_coding", "lncRNA")}. \code{NULL} (default) = no filter.
 #' @param biotype_col Column of the polyA_DB table holding the biotype. Default
 #'   \code{"gene_biotype"}.
+#' @param location_col Column of the polyA_DB table holding the genomic location
+#'   of the site. Default \code{"Intron.exon.location"}.
 #' @param max.dist Maximum distance (nt) between a peak's 3' end and its
 #'   polyA_DB site. Default \code{50}, as in \code{PASTA::GetPolyADbAnnotation()};
 #'   use the same value there.
@@ -275,9 +416,15 @@ CleanPolyAMetadata <- function(
 #'       when \code{biotypes} is set.}
 #'     \item{CommonPeaks}{An integer vector indicating the number of samples that
 #'       overlap with each peak in \code{Ranges}.}
-#'     \item{Audit}{With \code{biotypes} set: one row per unified peak BEFORE
-#'       filtering (\code{peak}, \code{n_samples}, \code{distance} to the nearest
-#'       polyA_DB site, \code{biotype}, \code{kept}); otherwise \code{NULL}.}
+#'     \item{PeakMeta}{When a polyA_DB is given: one row per unified peak,
+#'       ALL of them (before filtering): \code{peak}, \code{n_samples},
+#'       \code{distance} to the nearest polyA_DB site, \code{biotype},
+#'       \code{location}, \code{kept}. \code{NULL} otherwise.}
+#'     \item{SampleSummary}{Peaks per sample. With a polyA_DB: counts per
+#'       \code{sample} x \code{location} x \code{biotype} x \code{kept} (each
+#'       original peak inherits the annotation of its unified peak); without:
+#'       \code{sample}, \code{n}.}
+#'     \item{Audit}{Same as \code{PeakMeta} (kept for compatibility).}
 #'   }
 #'
 #' @details
@@ -294,12 +441,13 @@ CleanPolyAMetadata <- function(
 #'     }
 #' }
 #'
-#' Biotype filter: each unified peak is matched to polyA_DB with the same rule
-#' as \code{PASTA::GetPolyADbAnnotation()} -- the peak's 3' end (strand-aware
-#' cleavage point), the nearest polyA_DB site on the same strand, accepted if
-#' within \code{max.dist} -- so a kept peak later receives exactly the
-#' annotation it was filtered on. Peaks without a polyA_DB site within
-#' \code{max.dist} have no biotype and are removed by the filter.
+#' Annotation and biotype filter: each unified peak is matched to polyA_DB with
+#' the same rule as \code{\link{AnnotatePolyADb}()} -- the peak's 3' end, the
+#' nearest polyA_DB site on the same strand within \code{max.dist}, and a fixed
+#' choice when several polyA_DB rows are equally near. Annotate the Seurat
+#' object with \code{AnnotatePolyADb()} (same file and \code{max.dist}) and
+#' every peak gets the same annotation in both. Peaks without a polyA_DB site
+#' within \code{max.dist} have no biotype and are removed by the filter.
 #'
 #' @note The function prints combined plots to the current graphics device.
 #'   Requires the \code{patchwork} package for plot combination (using \code{|} operator).
@@ -330,6 +478,7 @@ FilterPeaks <- function(polyA.assays,
                         polyAdb          = NULL,
                         biotypes         = NULL,
                         biotype_col      = "gene_biotype",
+                        location_col     = "Intron.exon.location",
                         max.dist         = 50,
                         plot             = TRUE,
                         verbose          = TRUE) {
@@ -356,49 +505,40 @@ FilterPeaks <- function(polyA.assays,
   #    PASTA::GetPolyADbAnnotation(): peak 3' end -> nearest same-strand
   #    polyA_DB site, accepted within max.dist).
   audit <- NULL
-  if (!is.null(biotypes)) {
+  n_all <- length(unified.peaks)
+  unified.all <- unified.peaks                      # before any filtering
+  keep <- rep(TRUE, n_all)
+  bt <- loc <- rep(NA_character_, n_all)
+  annotate <- !is.null(biotypes) || !is.null(polyAdb) || !is.null(polyAdb.file)
+  if (annotate) {
     if (!is.numeric(max.dist) || length(max.dist) != 1 || is.na(max.dist) || max.dist < 0) {
       stop("`max.dist` must be a single number >= 0 (nt), e.g. 50 as in GetPolyADbAnnotation().")
     }
     if (is.null(polyAdb)) {
       if (is.null(polyAdb.file) || !file.exists(polyAdb.file)) {
-        stop("Give `polyAdb.file` (existing path) or `polyAdb` when `biotypes` is set.")
+        stop("Give `polyAdb.file` (existing path) or `polyAdb` when `biotypes` is set ",
+             "(and check that the path exists).")
       }
-      polyAdb <- utils::read.delim(polyAdb.file, stringsAsFactors = FALSE)
+      polyAdb <- utils::read.table(file = polyAdb.file, header = TRUE)
     }
-    need <- c("hg38_Chromosome_format", "hg38_Position", "Strand", biotype_col)
-    miss <- setdiff(need, colnames(polyAdb))
-    if (length(miss)) stop("polyA_DB table lacks column(s): ", paste(miss, collapse = ", "))
-
-    db <- GenomicRanges::makeGRangesFromDataFrame(
-      polyAdb, keep.extra.columns = FALSE,
-      seqnames.field = "hg38_Chromosome_format",
-      start.field = "hg38_Position", end.field = "hg38_Position",
-      strand.field = "Strand")
-    db_biotype <- as.character(polyAdb[[biotype_col]])
-
+    if (!biotype_col %in% colnames(polyAdb)) {
+      stop("polyA_DB table has no column '", biotype_col, "'.")
+    }
     if ("*" %in% as.character(GenomicRanges::strand(unified.peaks))) {
       stop("Unstranded peaks found; cannot match polyA_DB strand-aware.")
     }
-    # chromosome naming (chr1 vs 1), as in GetPolyADbAnnotation()
-    if (!all(GenomeInfoDb::seqlevelsStyle(unified.peaks) %in% GenomeInfoDb::seqlevelsStyle(db))) {
-      GenomeInfoDb::seqlevelsStyle(db) <- GenomeInfoDb::seqlevelsStyle(unified.peaks)[1]
+
+    # Same matching as AnnotatePolyADb() (used to annotate the Seurat object),
+    # so a peak gets the same polyA_DB row here and in the object.
+    m <- .MatchPolyADb(unified.peaks, polyAdb, max.dist = max.dist,
+                       location_col = location_col)
+    dist <- m$distance
+    bt   <- as.character(polyAdb[[biotype_col]])[m$row]
+    if (location_col %in% colnames(polyAdb)) {
+      loc <- as.character(polyAdb[[location_col]])[m$row]
     }
 
-    # cleavage point = 3' end of the peak (strand-aware), width 1
-    cleavage <- GenomicRanges::resize(unified.peaks, width = 1, fix = "end")
-    ol <- suppressWarnings(GenomicRanges::distanceToNearest(cleavage, db, ignore.strand = FALSE))
-    q  <- S4Vectors::queryHits(ol)
-    s  <- S4Vectors::subjectHits(ol)
-    d  <- S4Vectors::mcols(ol)$distance
-
-    n_all <- length(unified.peaks)
-    dist  <- rep(NA_integer_, n_all); dist[q] <- d
-    bt    <- rep(NA_character_, n_all)
-    ok    <- d <= max.dist
-    bt[q[ok]] <- db_biotype[s[ok]]
-
-    keep <- bt %in% biotypes
+    if (!is.null(biotypes)) keep <- bt %in% biotypes
     audit <- data.frame(
       peak      = paste(GenomicRanges::seqnames(unified.peaks), GenomicRanges::start(unified.peaks),
                         GenomicRanges::end(unified.peaks), GenomicRanges::strand(unified.peaks),
@@ -406,11 +546,12 @@ FilterPeaks <- function(polyA.assays,
       n_samples = as.integer(peak_sample_counts),
       distance  = dist,
       biotype   = bt,
+      location  = loc,
       kept      = keep,
       stringsAsFactors = FALSE
     )
 
-    if (verbose) {
+    if (verbose && !is.null(biotypes)) {
       message(sprintf(
         "Biotype filter {%s} (polyA_DB site within %s nt of the peak 3' end):\n  %d unified peaks\n  %d without a polyA_DB site within %s nt\n  %d at a site of another biotype\n  %d kept (%.1f%%)",
         paste(biotypes, collapse = ", "), max.dist, n_all, sum(is.na(bt)), max.dist,
@@ -424,6 +565,22 @@ FilterPeaks <- function(polyA.assays,
     unified.peaks      <- unified.peaks[keep]
     peak_sample_counts <- peak_sample_counts[keep]
   }
+
+  # 4. Per-sample summary: every original peak of each sample is mapped to its
+  #    unified peak (strand-aware; reduce() guarantees exactly one) and inherits
+  #    its annotation and whether it was kept. Returned as counts (one row per
+  #    sample x location x biotype x kept), not one row per original peak.
+  sample_summary <- dplyr::bind_rows(lapply(names(all.ranges), function(nm) {
+    idx <- GenomicRanges::findOverlaps(all.ranges[[nm]], unified.all,
+                                       ignore.strand = FALSE, select = "first")
+    if (!annotate) {
+      return(data.frame(sample = nm, n = length(all.ranges[[nm]]), stringsAsFactors = FALSE))
+    }
+    d <- data.frame(location = loc[idx], biotype = bt[idx], kept = keep[idx],
+                    stringsAsFactors = FALSE)
+    d <- dplyr::count(d, location, biotype, kept, name = "n")
+    cbind(sample = nm, d, stringsAsFactors = FALSE)
+  }))
 
   if (isTRUE(plot)) {
     # Number of peaks per sample
@@ -464,7 +621,11 @@ FilterPeaks <- function(polyA.assays,
     print(combined_plot)
   }
 
-  return(list(Ranges = unified.peaks, CommonPeaks = peak_sample_counts, Audit = audit))
+  return(list(Ranges        = unified.peaks,
+              CommonPeaks   = peak_sample_counts,
+              PeakMeta      = audit,
+              SampleSummary = sample_summary,
+              Audit         = audit))   # same as PeakMeta (kept for compatibility)
 }
 
 #' Requantify PolyA Assays Using Unified Peaks
@@ -571,6 +732,135 @@ RequantifyPolyA <- function(polyA.assays,
   names(polyA.assays.unified) <- samples
 
   return(polyA.assays.unified)
+}
+
+#' Build the polyA assay of a Seurat object, end to end
+#'
+#' Runs the steps that follow \code{FilterPeaks()}: requantify every sample on
+#' the unified peaks (\code{RequantifyPolyA()}), merge the samples, attach the
+#' gene annotation (EnsDb), keep the cells present in both the Seurat object
+#' and the polyA data, add the polyA assay and annotate its sites with polyA_DB
+#' (\code{AnnotatePolyADb()}).
+#'
+#' @param seurat_obj Seurat object (RNA) the polyA assay is added to.
+#' @param polyA.assays Named list of per-sample polyA assays
+#'   (\code{UploadPolyAAssays()}).
+#' @param unified.peaks Output of \code{FilterPeaks()}.
+#' @param threshold Minimum number of samples a unified peak must be present in
+#'   (passed to \code{RequantifyPolyA()}).
+#' @param genome Genome build: \code{"mm10"}, \code{"hg38"}, \code{"hg19"} or
+#'   \code{"mm39"}. Used for the assays and the gene annotation.
+#' @param ensdb \code{EnsDb} object for the gene annotation. \code{NULL}
+#'   (default) picks it from \code{genome}: mm10 -> \code{EnsDb.Mmusculus.v79},
+#'   hg38 -> \code{EnsDb.Hsapiens.v86}, hg19 -> \code{EnsDb.Hsapiens.v75}
+#'   (give it explicitly for mm39). \code{FALSE} skips the gene annotation.
+#' @param polyAdb.file polyA_DB table for \code{AnnotatePolyADb()}. Use the
+#'   same file and \code{max.dist} as in \code{FilterPeaks()}. \code{NULL}
+#'   skips this annotation.
+#' @param max.dist Passed to \code{AnnotatePolyADb()}. Default \code{50}.
+#' @param assay Name of the polyA assay in \code{seurat_obj}. Default
+#'   \code{"polyA"}.
+#' @param set_default Make \code{assay} the default assay. Default \code{TRUE}.
+#' @param verbose Print progress. Default \code{TRUE}.
+#'
+#' @return \code{seurat_obj} restricted to the cells present in the polyA data,
+#'   with the polyA assay (gene annotation and polyA_DB annotation in its
+#'   \code{meta.features}).
+#'
+#' @examples
+#' \dontrun{
+#' PeaksFiltering <- FilterPeaks(polyA.assays, multiple_samples = TRUE,
+#'                               polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
+#'                               biotypes = "protein_coding", max.dist = 50)
+#' seurat_obj_filtered <- PolyAPipeline(seurat_obj_filtered, polyA.assays, PeaksFiltering,
+#'                                      threshold = 16, genome = "mm10",
+#'                                      polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
+#'                                      max.dist = 50)
+#' rm(polyA.assays)
+#' }
+#'
+#' @export
+PolyAPipeline <- function(seurat_obj,
+                          polyA.assays,
+                          unified.peaks,
+                          threshold,
+                          genome       = c("mm10", "hg38", "hg19", "mm39"),
+                          ensdb        = NULL,
+                          polyAdb.file = NULL,
+                          max.dist     = 50,
+                          assay        = "polyA",
+                          set_default  = TRUE,
+                          verbose      = TRUE) {
+  genome <- match.arg(genome)
+  if (!methods::is(seurat_obj, "Seurat")) stop("`seurat_obj` must be a Seurat object.")
+  if (missing(threshold)) stop("`threshold` is required (minimum number of samples per peak).")
+  if (!is.null(polyAdb.file) && !file.exists(polyAdb.file)) {
+    stop("`polyAdb.file` not found: ", polyAdb.file)
+  }
+
+  # gene annotation source
+  if (is.null(ensdb)) {
+    pkg <- switch(genome,
+                  mm10 = "EnsDb.Mmusculus.v79",
+                  hg38 = "EnsDb.Hsapiens.v86",
+                  hg19 = "EnsDb.Hsapiens.v75",
+                  mm39 = stop("No default EnsDb for mm39: pass `ensdb` (or ensdb = FALSE)."))
+    if (!requireNamespace(pkg, quietly = TRUE)) stop("Package '", pkg, "' is required.")
+    ensdb <- getExportedValue(pkg, pkg)
+  }
+
+  # 1. requantify every sample on the unified peaks
+  if (verbose) message("1/5 Requantifying ", length(polyA.assays), " sample(s) (threshold = ",
+                       threshold, ")...")
+  polyA.unified <- RequantifyPolyA(polyA.assays = polyA.assays, unified.peaks = unified.peaks,
+                                   threshold = threshold, genome = genome)
+
+  # 2. merge samples
+  if (verbose) message("2/5 Merging samples...")
+  polyA.merged <- if (length(polyA.unified) > 1) {
+    merge(x = polyA.unified[[1]], y = polyA.unified[2:length(polyA.unified)], merge.data = TRUE)
+  } else {
+    polyA.unified[[1]]
+  }
+  rm(polyA.unified); invisible(gc(verbose = FALSE))
+
+  # 3. gene annotation
+  if (!isFALSE(ensdb)) {
+    if (verbose) message("3/5 Adding gene annotation (", genome, ")...")
+    annotations <- suppressWarnings(Signac::GetGRangesFromEnsDb(ensdb = ensdb))
+    Signac::genome(annotations) <- genome
+    Signac::Annotation(polyA.merged) <- annotations
+  } else if (verbose) {
+    message("3/5 Gene annotation skipped (ensdb = FALSE).")
+  }
+
+  # 4. common cells + add the assay
+  cells <- intersect(colnames(seurat_obj), colnames(polyA.merged))
+  if (!length(cells)) {
+    stop("No cells in common between `seurat_obj` and the polyA data. Example names: '",
+         colnames(seurat_obj)[1], "' vs '", colnames(polyA.merged)[1], "'.")
+  }
+  if (verbose) {
+    message("4/5 Cells: ", length(cells), " in common (Seurat: ", ncol(seurat_obj),
+            ", polyA: ", ncol(polyA.merged), ").")
+  }
+  seurat_obj <- subset(seurat_obj, cells = cells)
+  seurat_obj[[assay]] <- subset(polyA.merged, cells = cells)
+  rm(polyA.merged); invisible(gc(verbose = FALSE))
+  if (isTRUE(set_default)) SeuratObject::DefaultAssay(seurat_obj) <- assay
+
+  # 5. polyA_DB annotation (same rule as FilterPeaks)
+  if (!is.null(polyAdb.file)) {
+    if (verbose) message("5/5 Annotating sites with polyA_DB (max.dist = ", max.dist, ")...")
+    seurat_obj <- AnnotatePolyADb(seurat_obj, polyAdb.file = polyAdb.file, assay = assay,
+                                  max.dist = max.dist, verbose = verbose)
+  } else if (verbose) {
+    message("5/5 polyA_DB annotation skipped (polyAdb.file = NULL).")
+  }
+
+  if (verbose) message("PolyAPipeline done: ", nrow(seurat_obj[[assay]]), " polyA sites x ",
+                       ncol(seurat_obj), " cells.")
+  seurat_obj
 }
 
 #' Plot PolyA Coverage for Differentially Expressed Sites
@@ -1002,6 +1292,11 @@ PolyAPlot <- function(
 
   # Extract polyA sites for this gene
   polyA_gene <- polyAdb[polyAdb$Gene_Symbol %in% gene, ]
+  # polyAdb from DEPsMatrix(Pasta = TRUE) has one row per peak x cell type x
+  # comparison; the plot needs one row per site.
+  if ("peak" %in% colnames(polyA_gene)) {
+    polyA_gene <- dplyr::distinct(polyA_gene, peak, .keep_all = TRUE)
+  }
 
   # Bug fix: "Shared" used to be hardcoded to `length(conds) == 3` with a
   # comment claiming that means "all 4 conditions" (a leftover/wrong comment
@@ -1792,9 +2087,12 @@ DEPolyAPeaks <- function(
 #' @param return_filter Logical. Also return \code{$filter}, with the same
 #'   structure as \code{PseudobulkFilter()} so it can be passed to
 #'   \code{QCDensity()}: the pseudobulk counts each (cell type x comparison)
-#'   block filtered (\code{$pseudobulk}, \code{$sample_meta}), the peaks each
-#'   block saw (\code{$tested}) and kept (\code{$kept}), and \code{$summary}
-#'   (peaks in / kept, status). \code{n_cells} is not available here (NA).
+#'   block filtered (\code{$pseudobulk}, \code{$sample_meta} with
+#'   \code{replicate} and \code{n_cells} per pseudobulk sample), the peaks
+#'   entering DEPsMatrix before PASTA (\code{$input}), the peaks each block saw
+#'   after PASTA (\code{$tested}) and kept after the expression filter
+#'   (\code{$kept}), and \code{$summary} (peaks in / kept, status). Plot the
+#'   three stages with \code{QCDensity(stage = "input" / "before" / "after")}.
 #'   Default \code{FALSE}.
 #' @param return_seurat Logical. The result is always a list with
 #'   \code{$red_scores} and \code{$polyAdb} (see \strong{Value}). If
@@ -1824,10 +2122,15 @@ DEPolyAPeaks <- function(
 #'   \code{ok_replicates}, and \code{quantifiable} (all three \code{TRUE}).
 #'
 #'   Always returns a \strong{list}: \code{$red_scores} (the RED table above,
-#'   suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb} (the
-#'   analyzed peak-level table -- one row per peak, TE handling applied, with a
-#'   \code{Repeated_Masker} flag -- suitable as \code{PolyAPlot()}'s
-#'   \code{polyAdb}). With \code{return_seurat = TRUE} the list also has
+#'   suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb}
+#'   (the analyzed sites, TE handling applied, with a \code{Repeated_Masker}
+#'   flag -- suitable as \code{PolyAPlot()}'s \code{polyAdb}). With
+#'   \code{Pasta = TRUE}, \code{$polyAdb} holds the full PASTA results: one row
+#'   per peak x cell type (\code{CellType}) x comparison (\code{Condition}) with
+#'   the \code{DEPolyAPeaks()} statistics (\code{Estimate}, \code{p.value},
+#'   \code{p_val_adj}, \code{percent.1}, \code{percent.2}) plus the peak/gene
+#'   annotation. With \code{Pasta = FALSE}, it is the plain peak-level table,
+#'   one row per peak. With \code{return_seurat = TRUE} the list also has
 #'   \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object;
 #'   with \code{exclude_peaks = TRUE}, \code{$peak_audit}; with
 #'   \code{return_filter = TRUE}, \code{$filter}.
@@ -2308,6 +2611,46 @@ DEPsMatrix <- function(
   pseudo <- as.data.frame(pseudo)
   pseudo$peak <- rownames(pseudo)
 
+  # For return_filter: cells and replicate of every pseudobulk column. The
+  # column name "<assay>.<v1>_<v2>_..._<vk>" holds the group.by values in order
+  # (Seurat turns "_" inside values into "-", may prefix a leading digit with
+  # "g", and make.names() turns spaces / "/" into "."). Both the name tokens and
+  # each cell's metadata values are normalised the same way (alphanumerics
+  # only, no g/X before a leading digit) and cells are counted per sample.
+  pb_sample_info <- NULL
+  if (isTRUE(return_filter)) {
+    pb_sample_info <- tryCatch({
+      .canon <- function(x) {
+        x <- gsub("[^A-Za-z0-9]", "", as.character(x))
+        sub("^[gX]([0-9])", "\\1", x)
+      }
+      md_g <- seu@meta.data[, group.by, drop = FALSE]
+      cell_key <- do.call(paste, c(lapply(md_g, .canon), sep = "|"))
+      n_by_key <- table(cell_key)
+
+      sid <- setdiff(colnames(pseudo), "peak")
+      tok <- strsplit(sub(paste0("^", assay, "\\."), "", sid), "_", fixed = TRUE)
+      rep_cols <- setdiff(group.by, c(condition_cols, celltype_col))
+      ok_len <- lengths(tok) == length(group.by)
+      key <- vapply(tok, function(t) paste(.canon(t), collapse = "|"), character(1))
+      n_cells <- ifelse(ok_len, as.integer(n_by_key[key]), NA_integer_)
+      replicate <- vapply(tok, function(t) {
+        if (length(t) != length(group.by) || !length(rep_cols)) return(NA_character_)
+        paste(t[match(rep_cols, group.by)], collapse = "_")
+      }, character(1))
+      if (verbose && any(is.na(n_cells))) {
+        message("Note: cells could not be counted for ", sum(is.na(n_cells)), " of ",
+                length(sid), " pseudobulk sample(s) (e.g. '", sid[is.na(n_cells)][1], "').")
+      }
+      data.frame(sample_id = sid, n_cells = n_cells, replicate = replicate,
+                 stringsAsFactors = FALSE)
+    }, error = function(e) {
+      if (verbose) message("Note: could not compute cells per pseudobulk sample (",
+                           conditionMessage(e), "); n_cells left NA.")
+      NULL
+    })
+  }
+
   # ---- RED scores per (cell type x comparison) -----------------------------
   extra_cols <- setdiff(colnames(comparisons), req_comp)
 
@@ -2459,17 +2802,36 @@ DEPsMatrix <- function(
     }
   }
 
-  # A peak-level table (one row per peak) of exactly the sites that were
-  # analyzed, with TE handling already applied (TE peaks removed in "Remove"
-  # mode) and a per-peak `Repeated_Masker` flag. This is the `polyAdb` argument
-  # PolyAPlot() expects -- returning it means callers don't have to keep a
-  # separate Peaksdb() output around, and the plotted sites match the analyzed
-  # set.
-  polyAdb <- dplyr::distinct(Peaks_all, peak, .keep_all = TRUE)
+  # `polyAdb`: the analyzed sites, with TE handling already applied (TE peaks
+  # removed in "Remove" mode) and a per-peak `Repeated_Masker` flag. This is
+  # the `polyAdb` argument PolyAPlot() expects -- returning it means callers
+  # don't have to keep a separate Peaksdb() output around, and the plotted
+  # sites match the analyzed set.
+  #
+  # Pasta = TRUE: the FULL PASTA table -- one row per peak x cell type x
+  # comparison, with the DEPolyAPeaks() statistics of every block. (It used to
+  # be distinct(peak), which kept only the first block's statistics for each
+  # peak and silently dropped all other cell types / conditions.) CellType is
+  # reported with its canonical (Seurat-object) name.
+  # Pasta = FALSE: the plain peak-level table, one row per peak, without the
+  # per-cell-type replication and the NA placeholder statistic columns.
+  if (isTRUE(Pasta)) {
+    polyAdb <- Peaks_all
+    san <- as.character(polyAdb$CellType)
+    polyAdb$CellType <- ifelse(san %in% names(canonical_by_san),
+                               unname(canonical_by_san[san]), san)
+    polyAdb <- dplyr::relocate(polyAdb, dplyr::any_of(c("peak", "CellType", "Condition")))
+    rownames(polyAdb) <- NULL
+  } else {
+    polyAdb <- dplyr::distinct(Peaks_all, peak, .keep_all = TRUE)
+    polyAdb <- polyAdb[, setdiff(colnames(polyAdb),
+                                 c("CellType", "Estimate", "p.value", "p_val_adj",
+                                   "percent.1", "percent.2")), drop = FALSE]
+  }
   polyAdb$Repeated_Masker <- .te_flag(polyAdb$peak)
 
-  # Always return a list so `polyAdb` (the analyzed peak-level table, one row per
-  # peak, TE handling applied) is available regardless of `return_seurat`.
+  # Always return a list so `polyAdb` (see above; TE handling applied) is
+  # available regardless of `return_seurat`.
   # `return_seurat = TRUE` additionally includes the (residual-bearing, when
   # Pasta = TRUE) Seurat object for PolyAPlot() coverage tracks.
   res <- list(red_scores = out, polyAdb = polyAdb)
@@ -2482,7 +2844,10 @@ DEPsMatrix <- function(
   # before/after filterByExpr (or the manual filter), and which were kept.
   # Same structure as PseudobulkFilter(), so it can be passed to QCDensity().
   if (isTRUE(return_filter)) {
-    res$filter <- .BuildDEPsFilter(block_filter, comparisons, assay, filter_method)
+    res$filter <- .BuildDEPsFilter(block_filter, comparisons, assay, filter_method,
+                                   pseudo         = pseudo,
+                                   input_features = features,
+                                   sample_info    = pb_sample_info)
   }
   res
 }
@@ -2491,10 +2856,14 @@ DEPsMatrix <- function(
 #'
 #' Builds the same structure as \code{PseudobulkFilter()} from the counts each
 #' (cell type x comparison) block actually filtered, so \code{QCDensity()}
-#' plots exactly what \code{DEPsMatrix()} used. \code{tested} holds the peaks
-#' each block saw before the filter ("before" stage).
+#' plots exactly what \code{DEPsMatrix()} used. Three peak sets:
+#' \code{input} = every peak entering DEPsMatrix (before PASTA; "input" stage),
+#' \code{tested} = the peaks each block saw before the expression filter, i.e.
+#' after PASTA ("before" stage), \code{kept} = after the filter ("after").
 #' @noRd
-.BuildDEPsFilter <- function(block_filter, comparisons, assay, filter_method) {
+.BuildDEPsFilter <- function(block_filter, comparisons, assay, filter_method,
+                             pseudo = NULL, input_features = NULL,
+                             sample_info = NULL) {
   has_counts <- vapply(block_filter, function(b) !is.null(b$counts), logical(1))
 
   summary <- dplyr::bind_rows(lapply(block_filter, function(b)
@@ -2517,6 +2886,12 @@ DEPsMatrix <- function(
                n_cells = NA_integer_, stringsAsFactors = FALSE)))
   sample_meta <- sample_meta[!duplicated(sample_meta$sample_id), , drop = FALSE]
   rownames(sample_meta) <- NULL
+  if (!is.null(sample_info)) {
+    m <- match(sample_meta$sample_id, sample_info$sample_id)
+    sample_meta$n_cells   <- sample_info$n_cells[m]
+    sample_meta$replicate <- ifelse(is.na(sample_info$replicate[m]),
+                                    sample_meta$replicate, sample_info$replicate[m])
+  }
 
   # One peaks x samples matrix. A control shared by several comparisons
   # appears in several blocks with identical values -- keep it once.
@@ -2532,9 +2907,26 @@ DEPsMatrix <- function(
                              dims = c(length(rows), nrow(sample_meta)),
                              dimnames = list(rows, sample_meta$sample_id))
 
+  # "input" stage: every peak entering DEPsMatrix (before PASTA), taken from
+  # the full pseudobulk for the same samples. Rows already in `pb` keep their
+  # block values (identical, both come from the same pseudobulk).
+  input <- NULL
+  if (!is.null(pseudo) && !is.null(input_features)) {
+    input <- intersect(as.character(input_features), rownames(pseudo))
+    extra <- setdiff(input, rownames(pb))
+    cols  <- intersect(sample_meta$sample_id, colnames(pseudo))
+    if (length(extra) && length(cols)) {
+      add <- matrix(0, nrow = length(extra), ncol = nrow(sample_meta),
+                    dimnames = list(extra, sample_meta$sample_id))
+      add[, cols] <- as.matrix(pseudo[extra, cols, drop = FALSE])
+      pb <- rbind(pb, Matrix::Matrix(add, sparse = TRUE))
+    }
+  }
+
   list(
     pseudobulk    = pb,
     sample_meta   = sample_meta,
+    input         = input,
     kept          = kept,
     tested        = tested,
     summary       = summary,
@@ -2792,8 +3184,17 @@ PeakAudit <- function(seu,
     counts_polyA
   }
 
-  has_treatment <- any(grepl(paste0(treatment, "_", CellType), colnames(counts_obj)))
-  has_control   <- any(grepl(paste0(control,   "_", CellType), colnames(counts_obj)))
+  # Pseudobulk columns of this block: "<assay>.<label>_<CellType>_<replicate>".
+  # Match the WHOLE name -- an unanchored "<label>_<CellType>" also matched
+  # cell types whose name starts with this one ("Sst" picked up "Sst.Chodl",
+  # "L6.IT" picked up "L6.IT.Car3"), mixing their samples into the block.
+  # Seurat may prefix the first group.by value with "g" (e.g. "g3xTg").
+  .re_esc  <- function(x) gsub("([][{}()+*^$|\\\\?.])", "\\\\\\1", x)
+  trt_pat  <- paste0("(^|\\.)g?", .re_esc(paste0(treatment, "_", CellType)), "_[^_]+$")
+  ctrl_pat <- paste0("(^|\\.)g?", .re_esc(paste0(control,   "_", CellType)), "_[^_]+$")
+
+  has_treatment <- any(grepl(trt_pat,  colnames(counts_obj)))
+  has_control   <- any(grepl(ctrl_pat, colnames(counts_obj)))
 
   if (!has_treatment) {
     stop("No column matching '", treatment, "_", CellType, "' found in counts_polyA.")
@@ -2814,8 +3215,8 @@ PeakAudit <- function(seu,
   }
 
   if (!is.null(covariate_formula)) {
-    trt_orig_cols  <- grep(paste0(treatment, "_", CellType), colnames(counts_obj), value = TRUE)
-    ctrl_orig_cols <- grep(paste0(control,   "_", CellType), colnames(counts_obj), value = TRUE)
+    trt_orig_cols  <- grep(trt_pat,  colnames(counts_obj), value = TRUE)
+    ctrl_orig_cols <- grep(ctrl_pat, colnames(counts_obj), value = TRUE)
 
     # Strip assay prefix (e.g. "polyA.") before extracting the sample token
     trt_orig_cols_clean  <- sub("^polyA\\.", "", trt_orig_cols)
@@ -2834,20 +3235,17 @@ PeakAudit <- function(seu,
   # Original pseudobulk column names, in the same order rename_with() numbers
   # them below (polyA_treatment_1.., polyA_control_1..) -- used to return the
   # block's counts with real sample names (DEPsMatrix(return_filter = TRUE)).
-  # (ignore.case = TRUE, like dplyr::matches())
-  trt_cols_orig  <- grep(paste0(treatment, "_", CellType), colnames(counts_obj),
-                         value = TRUE, ignore.case = TRUE)
-  ctrl_cols_orig <- grep(paste0(control,   "_", CellType), colnames(counts_obj),
-                         value = TRUE, ignore.case = TRUE)
+  trt_cols_orig  <- grep(trt_pat,  colnames(counts_obj), value = TRUE)
+  ctrl_cols_orig <- grep(ctrl_pat, colnames(counts_obj), value = TRUE)
 
   counts_polyA <- counts_obj %>%
     dplyr::rename_with(
       ~ paste0("polyA_treatment_", seq_along(.x)),
-      dplyr::matches(paste0(treatment, "_", CellType))
+      dplyr::matches(trt_pat, ignore.case = FALSE)
     ) %>%
     dplyr::rename_with(
       ~ paste0("polyA_control_", seq_along(.x)),
-      dplyr::matches(paste0(control, "_", CellType))
+      dplyr::matches(ctrl_pat, ignore.case = FALSE)
     ) %>%
     dplyr::mutate(peak = rownames(.))
 
