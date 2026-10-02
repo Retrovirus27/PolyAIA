@@ -38,6 +38,7 @@ Imports:
     utils,
     magrittr,
     BiocParallel,
+    parallel,
     colorspace,
     viridisLite,
     scDblFinder,

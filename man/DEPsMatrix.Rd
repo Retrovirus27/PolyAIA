@@ -39,6 +39,10 @@ DEPsMatrix(
   repeat_masker_positions = "Intron",
   drop_na_cols = TRUE,
   pair_rule = c("max", "top"),
+  red_tests = c("LRT", "fisher", "ttest"),
+  parallel = FALSE,
+  ncores = NULL,
+  BPPARAM = NULL,
   exclude_peaks = FALSE,
   peak_audit = NULL,
   phantom_min_counts = 50,
@@ -200,6 +204,23 @@ most-used sites from pooled treatment + control reads of the comparison
 (REDu: the two most-used 3'-most-exon sites; REDi: the most-used intronic
 site and the most-used 3'-most-exon site downstream of it), which does not
 depend on the treatment-vs-control difference.}
+
+\item{red_tests}{Tests of the proximal/distal usage change reported per
+pair, any of \code{"LRT"} (binomial GLM likelihood-ratio test on
+per-replicate counts), \code{"fisher"} (Fisher's exact test on pooled
+counts) and \code{"ttest"} (t-test on per-replicate log2(d/p)). Each adds
+\code{RED_<test>_pval} / \code{RED_<test>_padj} (BH per cell type x
+comparison x RED type). Default all three; fewer = faster.}
+
+\item{parallel}{Logical. Compute the (cell type x comparison) blocks in
+parallel (BiocParallel; forking on macOS/Linux). Default \code{FALSE}
+(sequential). Results are identical either way.}
+
+\item{ncores}{Number of workers when \code{parallel = TRUE}. \code{NULL}
+(default) = all cores but one.}
+
+\item{BPPARAM}{Optional BiocParallel back-end (overrides
+\code{parallel}/\code{ncores}), e.g. \code{BiocParallel::MulticoreParam(8)}.}
 
 \item{exclude_peaks}{Logical. Remove "phantom" peaks (counts in the matrix
 but no reads in their window of the fragment files; see

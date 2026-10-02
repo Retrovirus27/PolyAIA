@@ -2071,6 +2071,19 @@ DEPolyAPeaks <- function(
 #'   (REDu: the two most-used 3'-most-exon sites; REDi: the most-used intronic
 #'   site and the most-used 3'-most-exon site downstream of it), which does not
 #'   depend on the treatment-vs-control difference.
+#' @param red_tests Tests of the proximal/distal usage change reported per
+#'   pair, any of \code{"LRT"} (binomial GLM likelihood-ratio test on
+#'   per-replicate counts), \code{"fisher"} (Fisher's exact test on pooled
+#'   counts) and \code{"ttest"} (t-test on per-replicate log2(d/p)). Each adds
+#'   \code{RED_<test>_pval} / \code{RED_<test>_padj} (BH per cell type x
+#'   comparison x RED type). Default all three; fewer = faster.
+#' @param parallel Logical. Compute the (cell type x comparison) blocks in
+#'   parallel (BiocParallel; forking on macOS/Linux). Default \code{FALSE}
+#'   (sequential). Results are identical either way.
+#' @param ncores Number of workers when \code{parallel = TRUE}. \code{NULL}
+#'   (default) = all cores but one.
+#' @param BPPARAM Optional BiocParallel back-end (overrides
+#'   \code{parallel}/\code{ncores}), e.g. \code{BiocParallel::MulticoreParam(8)}.
 #' @param exclude_peaks Logical. Remove "phantom" peaks (counts in the matrix
 #'   but no reads in their window of the fragment files; see
 #'   \code{PeakAudit()}) before pairing. Default \code{FALSE}.
@@ -2199,6 +2212,10 @@ DEPsMatrix <- function(
     repeat_masker_positions = "Intron",
     drop_na_cols        = TRUE,
     pair_rule           = c("max", "top"),
+    red_tests           = c("LRT", "fisher", "ttest"),
+    parallel            = FALSE,
+    ncores              = NULL,
+    BPPARAM             = NULL,
     exclude_peaks       = FALSE,
     peak_audit          = NULL,
     phantom_min_counts  = 50,
@@ -2214,6 +2231,7 @@ DEPsMatrix <- function(
   # ---- Validation -----------------------------------------------------------
   repeat_masker <- match.arg(repeat_masker)
   pair_rule     <- match.arg(pair_rule)
+  red_tests     <- match.arg(red_tests, several.ok = TRUE)
   filter_method <- match.arg(filter_method)
   if (filter_method == "manual" &&
       (!is.numeric(mincounts) || length(mincounts) != 1 || mincounts < 0)) {
@@ -2671,69 +2689,103 @@ DEPsMatrix <- function(
       length(celltypes_red) * nrow(comparisons)))
   }
 
-  results <- lapply(seq_len(nrow(comparisons)), function(ci) {
+  # One task per (comparison x cell type), comparison-major as before. Tasks
+  # are independent, so they can run in parallel (ncores / BPPARAM); each
+  # returns its result and its bookkeeping instead of writing to shared
+  # variables, and everything is assembled afterwards in the same order.
+  tasks <- expand.grid(ct = celltypes_red, ci = seq_len(nrow(comparisons)),
+                       stringsAsFactors = FALSE)
+
+  .run_block <- function(k) {
+    ci  <- tasks$ci[k]
+    ct  <- tasks$ct[k]
     cmp <- comparisons[ci, ]
-    red_ct <- lapply(celltypes_red, function(ct) {
-      # A cell type may pass the overall min_cells threshold yet still lack
-      # enough cells in one condition of THIS comparison, so its pseudobulk
-      # treatment/control columns can be missing -- the RED core stops in that
-      # case. Skip (recording why) rather than aborting the whole run.
-      red <- tryCatch(
-        .RedScoresCellType(
-          Peaks             = Peaks_all,
-          counts_polyA      = pseudo,
-          CellType          = ct,
-          treatment         = cmp$treatment,
-          control           = cmp$control,
-          # Only filter Peaks by Condition when PASTA populated it per-comparison;
-          # in the no-PASTA branch the same peak rows serve every comparison.
-          Condition         = if (isTRUE(Pasta)) cmp$Condition else NULL,
-          filter_method     = filter_method,
-          mincounts         = mincounts,
-          filterByExpr_args = filterByExpr_args,
-          sample_metadata   = sample_metadata,
-          covariate_formula = covariate_formula,
-          gdpau_min_reads   = gdpau_min_reads,
-          pair_rule         = pair_rule,
-          min_site_reads    = min_site_reads,
-          min_site_usage    = min_site_usage,
-          min_rep_pairs     = min_rep_pairs,
-          keep_counts       = isTRUE(return_filter)
-        ),
-        error = function(e) {
-          block_fail <<- c(block_fail,
-                           paste0("[", canonical_by_san[[ct]], " / ", cmp$Condition, "] ",
-                                  conditionMessage(e)))
-          NULL
-        }
-      )
-      fi <- if (!is.null(red)) attr(red, "red_filter") else NULL
-      block_filter[[length(block_filter) + 1]] <<- list(
-        Cells = canonical_by_san[[ct]], Condition = cmp$Condition,
-        treatment = cmp$treatment, control = cmp$control,
-        red_status = if (is.null(red)) "error" else if (nrow(red) == 0) "empty" else "ok",
-        n_peaks = if (is.null(fi)) NA_integer_ else fi$n_peaks,
-        n_kept  = if (is.null(fi)) NA_integer_ else fi$n_kept,
-        kept    = if (is.null(fi)) character(0) else fi$kept,
-        counts  = if (is.null(fi)) NULL else fi$counts,
-        samples = if (is.null(fi)) NULL else fi$samples
-      )
-      if (is.null(red)) return(NULL)
-      if (nrow(red) == 0) {
-        block_empty <<- c(block_empty,
-                          paste0(canonical_by_san[[ct]], " / ", cmp$Condition))
-        return(NULL)
+    err <- NULL
+    # A cell type may pass the overall min_cells threshold yet still lack
+    # enough cells in one condition of THIS comparison, so its pseudobulk
+    # treatment/control columns can be missing -- the RED core stops in that
+    # case. Skip (recording why) rather than aborting the whole run.
+    red <- tryCatch(
+      .RedScoresCellType(
+        Peaks             = Peaks_all,
+        counts_polyA      = pseudo,
+        CellType          = ct,
+        treatment         = cmp$treatment,
+        control           = cmp$control,
+        # Only filter Peaks by Condition when PASTA populated it per-comparison;
+        # in the no-PASTA branch the same peak rows serve every comparison.
+        Condition         = if (isTRUE(Pasta)) cmp$Condition else NULL,
+        filter_method     = filter_method,
+        mincounts         = mincounts,
+        filterByExpr_args = filterByExpr_args,
+        sample_metadata   = sample_metadata,
+        covariate_formula = covariate_formula,
+        gdpau_min_reads   = gdpau_min_reads,
+        pair_rule         = pair_rule,
+        min_site_reads    = min_site_reads,
+        min_site_usage    = min_site_usage,
+        min_rep_pairs     = min_rep_pairs,
+        keep_counts       = isTRUE(return_filter),
+        red_tests         = red_tests
+      ),
+      error = function(e) {
+        err <<- paste0("[", canonical_by_san[[ct]], " / ", cmp$Condition, "] ",
+                       conditionMessage(e))
+        NULL
       }
+    )
+    fi <- if (!is.null(red)) attr(red, "red_filter") else NULL
+    filt <- list(
+      Cells = canonical_by_san[[ct]], Condition = cmp$Condition,
+      treatment = cmp$treatment, control = cmp$control,
+      red_status = if (is.null(red)) "error" else if (nrow(red) == 0) "empty" else "ok",
+      n_peaks = if (is.null(fi)) NA_integer_ else fi$n_peaks,
+      n_kept  = if (is.null(fi)) NA_integer_ else fi$n_kept,
+      kept    = if (is.null(fi)) character(0) else fi$kept,
+      counts  = if (is.null(fi)) NULL else fi$counts,
+      samples = if (is.null(fi)) NULL else fi$samples
+    )
+    empty <- if (!is.null(red) && nrow(red) == 0) {
+      paste0(canonical_by_san[[ct]], " / ", cmp$Condition)
+    } else NULL
+    if (!is.null(red) && nrow(red) > 0) {
       # Report the canonical (Seurat-object) cell-type name, not the dotted one.
       red$Cells     <- canonical_by_san[[ct]]
       red$Condition <- cmp$Condition
       for (col in extra_cols) red[[col]] <- cmp[[col]]
-      red
-    })
-    dplyr::bind_rows(red_ct[!vapply(red_ct, is.null, logical(1))])
-  })
+    } else {
+      red <- NULL
+    }
+    list(red = red, fail = err, empty = empty, filter = filt)
+  }
 
-  out <- dplyr::bind_rows(results)
+  if (isTRUE(parallel) && is.null(BPPARAM)) {
+    if (is.null(ncores)) ncores <- max(1L, parallel::detectCores() - 1L)
+  } else if (is.null(BPPARAM)) {
+    ncores <- 1L
+  }
+  if (is.null(BPPARAM) && ncores > 1) {
+    BPPARAM <- if (.Platform$OS.type == "windows") {
+      BiocParallel::SnowParam(workers = ncores, progressbar = verbose)
+    } else {
+      BiocParallel::MulticoreParam(workers = ncores, progressbar = verbose)
+    }
+  }
+  if (!is.null(BPPARAM)) {
+    if (verbose) message("Running ", nrow(tasks), " block(s) on ",
+                         BiocParallel::bpnworkers(BPPARAM), " worker(s)...")
+    block_res <- BiocParallel::bplapply(seq_len(nrow(tasks)), .run_block, BPPARAM = BPPARAM)
+  } else {
+    block_res <- lapply(seq_len(nrow(tasks)), .run_block)
+  }
+
+  out          <- dplyr::bind_rows(lapply(block_res, `[[`, "red"))
+  block_fail   <- unlist(lapply(block_res, `[[`, "fail"))
+  block_empty  <- unlist(lapply(block_res, `[[`, "empty"))
+  block_filter <- lapply(block_res, `[[`, "filter")
+  if (is.null(block_fail))  block_fail  <- character(0)
+  if (is.null(block_empty)) block_empty <- character(0)
+  rm(block_res)
 
   # Report skipped blocks up front -- a cell type missing from the result is
   # almost always one of these, not a real biological absence.
@@ -3134,8 +3186,10 @@ PeakAudit <- function(seu,
     min_site_usage    = 0.05,
     min_rep_pairs     = 0.9,
     keep_counts       = FALSE,
+    red_tests         = c("LRT", "fisher", "ttest"),
     verbose           = FALSE
 ) {
+  red_tests <- match.arg(red_tests, several.ok = TRUE)
 
   pair_rule <- match.arg(pair_rule)
 
@@ -3381,6 +3435,7 @@ PeakAudit <- function(seu,
         RED_Direction     = NA_character_,
         RED_fisher_pval   = NA_real_,
         RED_fisher_padj   = NA_real_,
+        RED_ttest_pval    = NA_real_,
         RED_LRT_pval      = NA_real_,
         RED_LRT_cov_pval  = NA_real_,
         PASTA_pval        = NA_real_,
@@ -3642,14 +3697,25 @@ PeakAudit <- function(seu,
       dplyr::mutate( RED = log2(d_treatment_prop/p_treatment_prop) - log2(d_control_prop/p_control_prop),
                      RED = ifelse(is.finite(RED), RED, NA_real_))
 
+    # Only the requested tests; Fisher and t-test come from ONE
+    # compute_statistics() call per pair (it computes both).
+    n_pairs <- nrow(pairwise_comparisons)
+    st <- if (any(c("fisher", "ttest") %in% red_tests)) {
+      lapply(seq_len(n_pairs), function(i)
+        compute_statistics(pairwise_comparisons$p_site_id[i],
+                           pairwise_comparisons$d_site_id[i], gene_processed))
+    } else NULL
     pairwise_comparisons <- pairwise_comparisons %>%
       dplyr::mutate(
-        RED_fisher_pval = sapply(seq_len(nrow(pairwise_comparisons)), function(i) {
-          compute_statistics(p_site_id[i], d_site_id[i], gene_processed )$fisher_pval }),
-        RED_ttest_pval = sapply(seq_len(nrow(pairwise_comparisons)), function(i) {
-          compute_statistics(p_site_id[i], d_site_id[i], gene_processed )$ttest_pval }),
-        RED_LRT_pval = sapply(seq_len(nrow(pairwise_comparisons)), function(i) {
-          compute_statistics_LRT(p_site_id[i], d_site_id[i], gene_processed )$lrt_pval }),
+        RED_fisher_pval = if ("fisher" %in% red_tests)
+          vapply(st, function(x) x$fisher_pval, numeric(1)) else NA_real_,
+        RED_ttest_pval  = if ("ttest" %in% red_tests)
+          vapply(st, function(x) x$ttest_pval, numeric(1)) else NA_real_,
+        RED_LRT_pval = if ("LRT" %in% red_tests) {
+          vapply(seq_len(n_pairs), function(i) {
+            compute_statistics_LRT(p_site_id[i], d_site_id[i], gene_processed)$lrt_pval
+          }, numeric(1))
+        } else NA_real_,
         RED_LRT_cov_pval = if (!is.null(covariate_formula)) {
           sapply(seq_len(nrow(pairwise_comparisons)), function(i) {
             compute_statistics_LRT_cov(
@@ -3744,6 +3810,7 @@ PeakAudit <- function(seu,
     dplyr::group_by(RED_type) %>%
     dplyr::mutate(
       RED_fisher_padj    = p.adjust(RED_fisher_pval,     method = "BH"),
+      RED_ttest_padj     = p.adjust(RED_ttest_pval,      method = "BH"),
       RED_LRT_padj       = p.adjust(RED_LRT_pval,         method = "BH"),
       RED_LRT_cov_padj   = p.adjust(RED_LRT_cov_pval,     method = "BH"),  # <-- add
       PASTA_padj         = p.adjust(PASTA_pval,           method = "BH"),
@@ -3765,6 +3832,8 @@ PeakAudit <- function(seu,
       RED, RED_Direction,
       DPAU, gDPAU,
       RED_LRT_pval,     RED_LRT_padj,
+      RED_fisher_pval,  RED_fisher_padj,
+      RED_ttest_pval,   RED_ttest_padj,
       RED_LRT_cov_pval, RED_LRT_cov_padj,
       PASTA_pval,       PASTA_padj,
       Condition,
