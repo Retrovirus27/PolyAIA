@@ -19,7 +19,8 @@ UploadPolyAAssays(
   fragments_suffix = ".blocks.sort.bed.barcode.gz",
   counts_files = NULL,
   fragment_files = NULL,
-  barcode_suffix = "-1"
+  barcode_suffix = "-1",
+  validate_fragments = TRUE
 )
 }
 \arguments{
@@ -64,6 +65,11 @@ do not follow a \code{<sample><suffix>} pattern. They override
 \item{barcode_suffix}{Text appended to every cell barcode after the sample
 prefix (\code{"<sample>_<barcode><suffix>"}), to match the cell names of
 the RNA object. Default \code{"-1"}; use \code{""} for none.}
+
+\item{validate_fragments}{Logical. Passed to \code{CreatePolyAAssay()}:
+check that every barcode appears in the fragment file. With all barcodes
+loaded, some have no fragments and this check fails; set \code{FALSE} to
+skip it. Default \code{TRUE}.}
 }
 \value{
 A named list of \code{PolyAAssay} objects, one per sample, ready

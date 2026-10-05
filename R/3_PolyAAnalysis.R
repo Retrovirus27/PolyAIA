@@ -29,6 +29,10 @@
 #'   full path of each sample's file (names = \code{samples}), for files that
 #'   do not follow a \code{<sample><suffix>} pattern. They override
 #'   \code{counts_dir}/\code{fragments_dir}.
+#' @param validate_fragments Logical. Passed to \code{CreatePolyAAssay()}:
+#'   check that every barcode appears in the fragment file. With all barcodes
+#'   loaded, some have no fragments and this check fails; set \code{FALSE} to
+#'   skip it. Default \code{TRUE}.
 #' @param barcode_suffix Text appended to every cell barcode after the sample
 #'   prefix (\code{"<sample>_<barcode><suffix>"}), to match the cell names of
 #'   the RNA object. Default \code{"-1"}; use \code{""} for none.
@@ -80,7 +84,8 @@ UploadPolyAAssays <- function(samples,
                                fragments_suffix = ".blocks.sort.bed.barcode.gz",
                                counts_files     = NULL,
                                fragment_files   = NULL,
-                               barcode_suffix   = "-1") {
+                               barcode_suffix   = "-1",
+                               validate_fragments = TRUE) {
 
   # File of each sample: explicit paths, or <dir>/<sample><suffix>
   .paths <- function(files, dir, suffix, what) {
@@ -133,7 +138,8 @@ UploadPolyAAssays <- function(samples,
     polyA.assays[[x]] <- PASTA::CreatePolyAAssay(
       counts = counts,
       genome = genome,
-      fragments = fragment.file
+      fragments = fragment.file,
+      validate.fragments = validate_fragments
     )
 
     # Discard this sample's raw counts before moving to the next -- they're
@@ -2081,6 +2087,14 @@ DEPolyAPeaks <- function(
 #'   \code{"edgeR"} (default): \code{edgeR::filterByExpr()} with the block's
 #'   treatment/control design; \code{"manual"}: keep peaks with
 #'   \code{rowSums(counts) >= mincounts}; \code{"none"}: keep all peaks.
+#' @param filter_scope Samples the peak filter is computed on (as in
+#'   \code{DEGsMatrix()}). \code{"comparison"} (default): each cell type x
+#'   comparison block with its own treatment/control samples.
+#'   \code{"celltype"}: one filter per cell type on all its samples (every
+#'   group in \code{comparisons}, design = group), reused by all its
+#'   comparisons. With \code{Pasta = TRUE} each comparison still only sees the
+#'   peaks PASTA tested in it, so the universe is (common filter) intersected
+#'   with that.
 #' @param mincounts Threshold for \code{filter_method = "manual"}. Default 10.
 #' @param filterByExpr_args Named list of extra arguments for
 #'   \code{edgeR::filterByExpr()} (e.g. \code{list(min.count = 5)}).
@@ -2256,6 +2270,7 @@ DEPsMatrix <- function(
     de_features         = NULL,
     min_cells           = 10,
     filter_method       = c("edgeR", "manual", "none"),
+    filter_scope        = c("comparison", "celltype"),
     mincounts           = 10,
     filterByExpr_args   = list(),
     gdpau_min_reads     = 5,
@@ -2293,6 +2308,7 @@ DEPsMatrix <- function(
   pair_rule     <- match.arg(pair_rule)
   red_tests     <- match.arg(red_tests, several.ok = TRUE)
   filter_method <- match.arg(filter_method)
+  filter_scope  <- match.arg(filter_scope)
   if (filter_method == "manual" &&
       (!is.numeric(mincounts) || length(mincounts) != 1 || mincounts < 0)) {
     stop("`mincounts` must be a single non-negative number.")
@@ -2749,6 +2765,39 @@ DEPsMatrix <- function(
       length(celltypes_red) * nrow(comparisons)))
   }
 
+  # filter_scope = "celltype": ONE expression filter per cell type on all its
+  # pseudobulk samples (every group of `comparisons`, design = group), reused
+  # by all its comparisons. Candidates = peaks PASTA tested for that cell type
+  # in any comparison. A cell type with < 2 groups falls back to the
+  # per-comparison filter.
+  keep_ct <- list()
+  if (filter_scope == "celltype") {
+    labels  <- unique(c(comparisons$treatment, comparisons$control))
+    pb_cols <- setdiff(colnames(pseudo), "peak")
+    for (ct in celltypes_red) {
+      cols  <- lapply(labels, function(l) .PseudobulkCols(pb_cols, l, ct))
+      group <- rep(labels, lengths(cols))
+      if (length(unique(group)) < 2) {
+        warning("filter_scope = 'celltype': '", canonical_by_san[[ct]], "' has < 2 groups; ",
+                "using the per-comparison filter for it.", call. = FALSE)
+        next
+      }
+      peaks_ct <- intersect(unique(Peaks_all$peak[Peaks_all$CellType == ct]), rownames(pseudo))
+      x <- as.matrix(pseudo[peaks_ct, unlist(cols), drop = FALSE])
+      x[is.na(x)] <- 0
+      keep <- .FilterFeatures(x, group,
+                              filter_method     = filter_method,
+                              mincounts         = mincounts,
+                              filterByExpr_args = filterByExpr_args)
+      keep_ct[[ct]] <- names(keep)[keep]
+      if (verbose) {
+        message("  Common filter '", canonical_by_san[[ct]], "': ", sum(keep), " / ",
+                length(keep), " peaks (", length(unique(group)), " groups, ",
+                ncol(x), " samples).")
+      }
+    }
+  }
+
   # One task per (comparison x cell type), comparison-major as before. Tasks
   # are independent, so they can run in parallel (ncores / BPPARAM); each
   # returns its result and its bookkeeping instead of writing to shared
@@ -2786,6 +2835,7 @@ DEPsMatrix <- function(
         min_site_usage    = min_site_usage,
         min_rep_pairs     = min_rep_pairs,
         keep_counts       = isTRUE(return_filter),
+        keep_peaks        = keep_ct[[ct]],
         red_tests         = red_tests
       ),
       error = function(e) {
@@ -2957,11 +3007,27 @@ DEPsMatrix <- function(
   # Same structure as PseudobulkFilter(), so it can be passed to QCDensity().
   if (isTRUE(return_filter)) {
     res$filter <- .BuildDEPsFilter(block_filter, comparisons, assay, filter_method,
+                                   filter_scope   = filter_scope,
                                    pseudo         = pseudo,
                                    input_features = features,
                                    sample_info    = pb_sample_info)
   }
   res
+}
+
+#' Pseudobulk columns of one group x cell type (internal)
+#'
+#' Columns are "<assay>.<label>_<CellType>_<replicate>". The WHOLE name is
+#' matched -- an unanchored "<label>_<CellType>" also matched cell types whose
+#' name starts with this one ("Sst" picked up "Sst.Chodl", "L6.IT" picked up
+#' "L6.IT.Car3"). Seurat may prefix the first group.by value with "g".
+#' @noRd
+.PseudobulkCols <- function(cols, label, ct) {
+  grep(.PseudobulkPattern(label, ct), cols, value = TRUE)
+}
+.PseudobulkPattern <- function(label, ct) {
+  esc <- function(x) gsub("([][{}()+*^$|\\\\?.])", "\\\\\\1", x)
+  paste0("(^|\\.)g?", esc(paste0(label, "_", ct)), "_[^_]+$")
 }
 
 #' Assemble DEPsMatrix(return_filter = TRUE)$filter (internal)
@@ -2974,6 +3040,7 @@ DEPsMatrix <- function(
 #' after PASTA ("before" stage), \code{kept} = after the filter ("after").
 #' @noRd
 .BuildDEPsFilter <- function(block_filter, comparisons, assay, filter_method,
+                             filter_scope = "comparison",
                              pseudo = NULL, input_features = NULL,
                              sample_info = NULL) {
   has_counts <- vapply(block_filter, function(b) !is.null(b$counts), logical(1))
@@ -3046,7 +3113,7 @@ DEPsMatrix <- function(
     feature_type  = "peak",
     assay         = assay,
     filter_method = filter_method,
-    filter_scope  = "comparison"
+    filter_scope  = filter_scope
   )
 }
 
@@ -3246,6 +3313,7 @@ PeakAudit <- function(seu,
     min_site_usage    = 0.05,
     min_rep_pairs     = 0.9,
     keep_counts       = FALSE,
+    keep_peaks        = NULL,
     red_tests         = c("LRT", "fisher", "ttest"),
     verbose           = FALSE
 ) {
@@ -3303,9 +3371,8 @@ PeakAudit <- function(seu,
   # cell types whose name starts with this one ("Sst" picked up "Sst.Chodl",
   # "L6.IT" picked up "L6.IT.Car3"), mixing their samples into the block.
   # Seurat may prefix the first group.by value with "g" (e.g. "g3xTg").
-  .re_esc  <- function(x) gsub("([][{}()+*^$|\\\\?.])", "\\\\\\1", x)
-  trt_pat  <- paste0("(^|\\.)g?", .re_esc(paste0(treatment, "_", CellType)), "_[^_]+$")
-  ctrl_pat <- paste0("(^|\\.)g?", .re_esc(paste0(control,   "_", CellType)), "_[^_]+$")
+  trt_pat  <- .PseudobulkPattern(treatment, CellType)
+  ctrl_pat <- .PseudobulkPattern(control,   CellType)
 
   has_treatment <- any(grepl(trt_pat,  colnames(counts_obj)))
   has_control   <- any(grepl(ctrl_pat, colnames(counts_obj)))
@@ -3385,10 +3452,16 @@ PeakAudit <- function(seu,
     grepl("^polyA_treatment_", count_cols) ~ "treatment",
     grepl("^polyA_control_",   count_cols) ~ "control"
   )
-  keep <- .FilterFeatures(count_mat, group,
-                          filter_method     = filter_method,
-                          mincounts         = mincounts,
-                          filterByExpr_args = filterByExpr_args)
+  # keep_peaks: the cell type's common filter (filter_scope = "celltype");
+  # otherwise the block's own treatment/control filter.
+  keep <- if (!is.null(keep_peaks)) {
+    rownames(count_mat) %in% keep_peaks
+  } else {
+    .FilterFeatures(count_mat, group,
+                    filter_method     = filter_method,
+                    mincounts         = mincounts,
+                    filterByExpr_args = filterByExpr_args)
+  }
 
   if (verbose) message(sprintf("Keeping %d / %d peaks after '%s' filtering", sum(keep), nrow(count_mat), filter_method))
 

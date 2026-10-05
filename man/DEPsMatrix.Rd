@@ -23,6 +23,7 @@ DEPsMatrix(
   de_features = NULL,
   min_cells = 10,
   filter_method = c("edgeR", "manual", "none"),
+  filter_scope = c("comparison", "celltype"),
   mincounts = 10,
   filterByExpr_args = list(),
   gdpau_min_reads = 5,
@@ -140,6 +141,15 @@ block before pairing (same options as \code{DEGsMatrix()}).
 \code{"edgeR"} (default): \code{edgeR::filterByExpr()} with the block's
 treatment/control design; \code{"manual"}: keep peaks with
 \code{rowSums(counts) >= mincounts}; \code{"none"}: keep all peaks.}
+
+\item{filter_scope}{Samples the peak filter is computed on (as in
+\code{DEGsMatrix()}). \code{"comparison"} (default): each cell type x
+comparison block with its own treatment/control samples.
+\code{"celltype"}: one filter per cell type on all its samples (every
+group in \code{comparisons}, design = group), reused by all its
+comparisons. With \code{Pasta = TRUE} each comparison still only sees the
+peaks PASTA tested in it, so the universe is (common filter) intersected
+with that.}
 
 \item{mincounts}{Threshold for \code{filter_method = "manual"}. Default 10.}
 
