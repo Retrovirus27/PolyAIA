@@ -2886,9 +2886,7 @@ DEPsMatrix <- function(
                          BiocParallel::bpnworkers(BPPARAM), " worker(s)...")
     block_res <- BiocParallel::bplapply(seq_len(nrow(tasks)), .run_block, BPPARAM = BPPARAM)
   } else {
-    # sequential: one progress bar over all blocks (when verbose)
-    block_res <- if (verbose) pbapply::pblapply(seq_len(nrow(tasks)), .run_block)
-                 else lapply(seq_len(nrow(tasks)), .run_block)
+    block_res <- lapply(seq_len(nrow(tasks)), .run_block)
   }
 
   out          <- dplyr::bind_rows(lapply(block_res, `[[`, "red"))
