@@ -13,11 +13,25 @@
 #'   sample's count/fragment file paths (see \code{counts_dir}/\code{fragments_dir})
 #'   and as the barcode-tagging prefix.
 #' @param counts_dir Directory containing each sample's raw polyA count file,
-#'   named \code{"<sample>.tab.gz"}.
+#'   named \code{paste0(<sample>, counts_suffix)}. Not needed if
+#'   \code{counts_files} is given.
 #' @param peaks_file Path to the shared peak annotation (\code{.gff}) file,
 #'   passed to \code{ReadPolyApipe()} for every sample.
-#' @param fragments_dir Directory containing each sample's fragment/barcode
-#'   file, named \code{"<sample>.blocks.sort.bed.barcode.gz"}.
+#' @param fragments_dir Directory containing each sample's fragment file
+#'   (tabix-indexed, with its \code{.tbi}), named
+#'   \code{paste0(<sample>, fragments_suffix)}. Not needed if
+#'   \code{fragment_files} is given.
+#' @param counts_suffix File-name ending of the count files. Default
+#'   \code{".tab.gz"}.
+#' @param fragments_suffix File-name ending of the fragment files. Default
+#'   \code{".blocks.sort.bed.barcode.gz"}.
+#' @param counts_files,fragment_files Optional named character vectors with the
+#'   full path of each sample's file (names = \code{samples}), for files that
+#'   do not follow a \code{<sample><suffix>} pattern. They override
+#'   \code{counts_dir}/\code{fragments_dir}.
+#' @param barcode_suffix Text appended to every cell barcode after the sample
+#'   prefix (\code{"<sample>_<barcode><suffix>"}), to match the cell names of
+#'   the RNA object. Default \code{"-1"}; use \code{""} for none.
 #' @param genome Genome build passed to \code{CreatePolyAAssay()}. Default \code{"hg38"}.
 #' @param filter.chromosomes,min.features,min.cells Passed through to
 #'   \code{ReadPolyApipe()}. Defaults \code{TRUE}, \code{10}, \code{25}.
@@ -38,25 +52,71 @@
 #'   fragments_dir = "1_Bed_files/",
 #'   genome        = "mm10"
 #' )
+#'
+#' # Other file names
+#' polyA.assays <- UploadPolyAAssays(
+#'   samples          = samples,
+#'   counts_dir       = "3_polyA_counts/",
+#'   counts_suffix    = "_counts.tab.gz",
+#'   peaks_file       = "4_MetaData/polyA_peaks.gff",
+#'   fragments_dir    = "1_Bed_files/",
+#'   fragments_suffix = ".fragments.tsv.gz",
+#'   genome           = "mm10"
+#' )
 #' }
 #'
 #' @export
 UploadPolyAAssays <- function(samples,
-                               counts_dir,
+                               counts_dir       = NULL,
                                peaks_file,
-                               fragments_dir,
+                               fragments_dir    = NULL,
                                genome = "hg38",
                                filter.chromosomes = TRUE,
                                min.features = 10,
                                min.cells = 25,
                                gc_each_sample = TRUE,
-                               verbose = TRUE) {
+                               verbose = TRUE,
+                               counts_suffix    = ".tab.gz",
+                               fragments_suffix = ".blocks.sort.bed.barcode.gz",
+                               counts_files     = NULL,
+                               fragment_files   = NULL,
+                               barcode_suffix   = "-1") {
+
+  # File of each sample: explicit paths, or <dir>/<sample><suffix>
+  .paths <- function(files, dir, suffix, what) {
+    if (!is.null(files)) {
+      if (is.null(names(files)) || !all(samples %in% names(files))) {
+        stop("`", what, "` must be a character vector named by sample; missing: ",
+             paste(setdiff(samples, names(files)), collapse = ", "))
+      }
+      return(files[samples])
+    }
+    if (is.null(dir)) stop("Give `", sub("_files$", "_dir", what), "` or `", what, "`.")
+    stats::setNames(file.path(dir, paste0(samples, suffix)), samples)
+  }
+  counts_paths   <- .paths(counts_files,   counts_dir,    counts_suffix,    "counts_files")
+  fragment_paths <- .paths(fragment_files, fragments_dir, fragments_suffix, "fragment_files")
+
+  # Fail fast: check every file (and the fragments' tabix index) before reading
+  miss <- c(counts_paths[!file.exists(counts_paths)],
+            fragment_paths[!file.exists(fragment_paths)])
+  no_tbi <- fragment_paths[file.exists(fragment_paths) &
+                             !file.exists(paste0(fragment_paths, ".tbi"))]
+  if (length(miss)) {
+    stop("File(s) not found:\n  ", paste(miss, collapse = "\n  "),
+         "\nCheck the directories / suffixes, or pass counts_files / fragment_files.",
+         call. = FALSE)
+  }
+  if (length(no_tbi)) {
+    stop("Fragment file(s) without a tabix index (.tbi):\n  ",
+         paste(no_tbi, collapse = "\n  "), call. = FALSE)
+  }
 
   polyA.assays <- stats::setNames(vector("list", length(samples)), samples)
 
   for (x in samples) {
     if (verbose) message("Reading sample: ", x)
-    counts.file <- file.path(counts_dir, paste0(x, ".tab.gz"))
+    counts.file <- counts_paths[[x]]
     counts <- PASTA::ReadPolyApipe(
       counts.file = counts.file,
       peaks.file = peaks_file,
@@ -65,9 +125,9 @@ UploadPolyAAssays <- function(samples,
       min.cells = min.cells
     )
     colnames(counts) <- paste(x, colnames(counts), sep = "_")
-    colnames(counts) <- paste0(colnames(counts), "-1")
+    colnames(counts) <- paste0(colnames(counts), barcode_suffix)
 
-    fragment.file <- file.path(fragments_dir, paste0(x, ".blocks.sort.bed.barcode.gz"))
+    fragment.file <- fragment_paths[[x]]
 
     if (verbose) message("Building PolyA assay: ", x)
     polyA.assays[[x]] <- PASTA::CreatePolyAAssay(

@@ -6,15 +6,20 @@
 \usage{
 UploadPolyAAssays(
   samples,
-  counts_dir,
+  counts_dir = NULL,
   peaks_file,
-  fragments_dir,
+  fragments_dir = NULL,
   genome = "hg38",
   filter.chromosomes = TRUE,
   min.features = 10,
   min.cells = 25,
   gc_each_sample = TRUE,
-  verbose = TRUE
+  verbose = TRUE,
+  counts_suffix = ".tab.gz",
+  fragments_suffix = ".blocks.sort.bed.barcode.gz",
+  counts_files = NULL,
+  fragment_files = NULL,
+  barcode_suffix = "-1"
 )
 }
 \arguments{
@@ -23,13 +28,16 @@ sample's count/fragment file paths (see \code{counts_dir}/\code{fragments_dir})
 and as the barcode-tagging prefix.}
 
 \item{counts_dir}{Directory containing each sample's raw polyA count file,
-named \code{"<sample>.tab.gz"}.}
+named \code{paste0(<sample>, counts_suffix)}. Not needed if
+\code{counts_files} is given.}
 
 \item{peaks_file}{Path to the shared peak annotation (\code{.gff}) file,
 passed to \code{ReadPolyApipe()} for every sample.}
 
-\item{fragments_dir}{Directory containing each sample's fragment/barcode
-file, named \code{"<sample>.blocks.sort.bed.barcode.gz"}.}
+\item{fragments_dir}{Directory containing each sample's fragment file
+(tabix-indexed, with its \code{.tbi}), named
+\code{paste0(<sample>, fragments_suffix)}. Not needed if
+\code{fragment_files} is given.}
 
 \item{genome}{Genome build passed to \code{CreatePolyAAssay()}. Default \code{"hg38"}.}
 
@@ -41,6 +49,21 @@ each sample's raw counts are discarded -- a little slower, but keeps peak
 memory down when samples are large or numerous. Default \code{TRUE}.}
 
 \item{verbose}{Logical. Whether to print progress messages. Default \code{TRUE}.}
+
+\item{counts_suffix}{File-name ending of the count files. Default
+\code{".tab.gz"}.}
+
+\item{fragments_suffix}{File-name ending of the fragment files. Default
+\code{".blocks.sort.bed.barcode.gz"}.}
+
+\item{counts_files, fragment_files}{Optional named character vectors with the
+full path of each sample's file (names = \code{samples}), for files that
+do not follow a \code{<sample><suffix>} pattern. They override
+\code{counts_dir}/\code{fragments_dir}.}
+
+\item{barcode_suffix}{Text appended to every cell barcode after the sample
+prefix (\code{"<sample>_<barcode><suffix>"}), to match the cell names of
+the RNA object. Default \code{"-1"}; use \code{""} for none.}
 }
 \value{
 A named list of \code{PolyAAssay} objects, one per sample, ready
@@ -64,6 +87,17 @@ polyA.assays <- UploadPolyAAssays(
   peaks_file    = "4_MetaData/polyA_Bam_Files_polyA_peaks.gff",
   fragments_dir = "1_Bed_files/",
   genome        = "mm10"
+)
+
+# Other file names
+polyA.assays <- UploadPolyAAssays(
+  samples          = samples,
+  counts_dir       = "3_polyA_counts/",
+  counts_suffix    = "_counts.tab.gz",
+  peaks_file       = "4_MetaData/polyA_peaks.gff",
+  fragments_dir    = "1_Bed_files/",
+  fragments_suffix = ".fragments.tsv.gz",
+  genome           = "mm10"
 )
 }
 
