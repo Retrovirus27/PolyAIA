@@ -13,11 +13,25 @@
 #'   sample's count/fragment file paths (see \code{counts_dir}/\code{fragments_dir})
 #'   and as the barcode-tagging prefix.
 #' @param counts_dir Directory containing each sample's raw polyA count file,
-#'   named \code{"<sample>.tab.gz"}.
+#'   named \code{paste0(<sample>, counts_suffix)}. Not needed if
+#'   \code{counts_files} is given.
 #' @param peaks_file Path to the shared peak annotation (\code{.gff}) file,
 #'   passed to \code{ReadPolyApipe()} for every sample.
-#' @param fragments_dir Directory containing each sample's fragment/barcode
-#'   file, named \code{"<sample>.blocks.sort.bed.barcode.gz"}.
+#' @param fragments_dir Directory containing each sample's fragment file
+#'   (tabix-indexed, with its \code{.tbi}), named
+#'   \code{paste0(<sample>, fragments_suffix)}. Not needed if
+#'   \code{fragment_files} is given.
+#' @param counts_suffix File-name ending of the count files. Default
+#'   \code{".tab.gz"}.
+#' @param fragments_suffix File-name ending of the fragment files. Default
+#'   \code{".blocks.sort.bed.barcode.gz"}.
+#' @param counts_files,fragment_files Optional named character vectors with the
+#'   full path of each sample's file (names = \code{samples}), for files that
+#'   do not follow a \code{<sample><suffix>} pattern. They override
+#'   \code{counts_dir}/\code{fragments_dir}.
+#' @param barcode_suffix Text appended to every cell barcode after the sample
+#'   prefix (\code{"<sample>_<barcode><suffix>"}), to match the cell names of
+#'   the RNA object. Default \code{"-1"}; use \code{""} for none.
 #' @param genome Genome build passed to \code{CreatePolyAAssay()}. Default \code{"hg38"}.
 #' @param filter.chromosomes,min.features,min.cells Passed through to
 #'   \code{ReadPolyApipe()}. Defaults \code{TRUE}, \code{10}, \code{25}.
@@ -38,25 +52,71 @@
 #'   fragments_dir = "1_Bed_files/",
 #'   genome        = "mm10"
 #' )
+#'
+#' # Other file names
+#' polyA.assays <- UploadPolyAAssays(
+#'   samples          = samples,
+#'   counts_dir       = "3_polyA_counts/",
+#'   counts_suffix    = "_counts.tab.gz",
+#'   peaks_file       = "4_MetaData/polyA_peaks.gff",
+#'   fragments_dir    = "1_Bed_files/",
+#'   fragments_suffix = ".fragments.tsv.gz",
+#'   genome           = "mm10"
+#' )
 #' }
 #'
 #' @export
 UploadPolyAAssays <- function(samples,
-                               counts_dir,
+                               counts_dir       = NULL,
                                peaks_file,
-                               fragments_dir,
+                               fragments_dir    = NULL,
                                genome = "hg38",
                                filter.chromosomes = TRUE,
                                min.features = 10,
                                min.cells = 25,
                                gc_each_sample = TRUE,
-                               verbose = TRUE) {
+                               verbose = TRUE,
+                               counts_suffix    = ".tab.gz",
+                               fragments_suffix = ".blocks.sort.bed.barcode.gz",
+                               counts_files     = NULL,
+                               fragment_files   = NULL,
+                               barcode_suffix   = "-1") {
+
+  # File of each sample: explicit paths, or <dir>/<sample><suffix>
+  .paths <- function(files, dir, suffix, what) {
+    if (!is.null(files)) {
+      if (is.null(names(files)) || !all(samples %in% names(files))) {
+        stop("`", what, "` must be a character vector named by sample; missing: ",
+             paste(setdiff(samples, names(files)), collapse = ", "))
+      }
+      return(files[samples])
+    }
+    if (is.null(dir)) stop("Give `", sub("_files$", "_dir", what), "` or `", what, "`.")
+    stats::setNames(file.path(dir, paste0(samples, suffix)), samples)
+  }
+  counts_paths   <- .paths(counts_files,   counts_dir,    counts_suffix,    "counts_files")
+  fragment_paths <- .paths(fragment_files, fragments_dir, fragments_suffix, "fragment_files")
+
+  # Fail fast: check every file (and the fragments' tabix index) before reading
+  miss <- c(counts_paths[!file.exists(counts_paths)],
+            fragment_paths[!file.exists(fragment_paths)])
+  no_tbi <- fragment_paths[file.exists(fragment_paths) &
+                             !file.exists(paste0(fragment_paths, ".tbi"))]
+  if (length(miss)) {
+    stop("File(s) not found:\n  ", paste(miss, collapse = "\n  "),
+         "\nCheck the directories / suffixes, or pass counts_files / fragment_files.",
+         call. = FALSE)
+  }
+  if (length(no_tbi)) {
+    stop("Fragment file(s) without a tabix index (.tbi):\n  ",
+         paste(no_tbi, collapse = "\n  "), call. = FALSE)
+  }
 
   polyA.assays <- stats::setNames(vector("list", length(samples)), samples)
 
   for (x in samples) {
     if (verbose) message("Reading sample: ", x)
-    counts.file <- file.path(counts_dir, paste0(x, ".tab.gz"))
+    counts.file <- counts_paths[[x]]
     counts <- PASTA::ReadPolyApipe(
       counts.file = counts.file,
       peaks.file = peaks_file,
@@ -65,9 +125,9 @@ UploadPolyAAssays <- function(samples,
       min.cells = min.cells
     )
     colnames(counts) <- paste(x, colnames(counts), sep = "_")
-    colnames(counts) <- paste0(colnames(counts), "-1")
+    colnames(counts) <- paste0(colnames(counts), barcode_suffix)
 
-    fragment.file <- file.path(fragments_dir, paste0(x, ".blocks.sort.bed.barcode.gz"))
+    fragment.file <- fragment_paths[[x]]
 
     if (verbose) message("Building PolyA assay: ", x)
     polyA.assays[[x]] <- PASTA::CreatePolyAAssay(
@@ -240,22 +300,191 @@ CleanPolyAMetadata <- function(
   return(obj)
 }
 
+#' Match peaks to polyA_DB sites (internal, shared by FilterPeaks and AnnotatePolyADb)
+#'
+#' Same rule as \code{PASTA::GetPolyADbAnnotation()} -- the peak's 3' end
+#' (strand-aware cleavage point), the nearest polyA_DB site on the same strand,
+#' accepted if within \code{max.dist} -- but with a FIXED choice when several
+#' polyA_DB rows are equally near (the same site is often listed once per gene):
+#' prefer a row with a non-empty \code{location_col}, then the first row of the
+#' table. PASTA picks one of them arbitrarily, which is not reproducible between
+#' two annotations.
+#' @return data.frame aligned with \code{ranges}: \code{row} (index into
+#'   \code{polyAdb}, NA if no site within \code{max.dist}), \code{distance}.
+#' @noRd
+.MatchPolyADb <- function(ranges, polyAdb, max.dist = 50,
+                          location_col = "Intron.exon.location") {
+  need <- c("hg38_Chromosome_format", "hg38_Position", "Strand")
+  miss <- setdiff(need, colnames(polyAdb))
+  if (length(miss)) stop("polyA_DB table lacks column(s): ", paste(miss, collapse = ", "))
+  if (!is.numeric(max.dist) || length(max.dist) != 1 || is.na(max.dist) || max.dist < 0) {
+    stop("`max.dist` must be a single number >= 0 (nt).")
+  }
+
+  db <- GenomicRanges::GRanges(
+    seqnames = as.character(polyAdb$hg38_Chromosome_format),
+    ranges   = IRanges::IRanges(start = as.integer(polyAdb$hg38_Position), width = 1L),
+    strand   = as.character(polyAdb$Strand))
+  # chromosome naming (chr1 vs 1), as in GetPolyADbAnnotation()
+  if (!all(GenomeInfoDb::seqlevelsStyle(ranges) == GenomeInfoDb::seqlevelsStyle(db))) {
+    GenomeInfoDb::seqlevelsStyle(db) <-
+      if (GenomeInfoDb::seqlevelsStyle(ranges)[1] == "UCSC") "UCSC" else "Ensembl"
+  }
+
+  cleavage <- GenomicRanges::resize(ranges, width = 1, fix = "end")   # 3' end
+  hits <- suppressWarnings(GenomicRanges::findOverlaps(cleavage, db, maxgap = max.dist,
+                                                       ignore.strand = FALSE))
+  q <- S4Vectors::queryHits(hits)
+  s <- S4Vectors::subjectHits(hits)
+  d <- GenomicRanges::distance(cleavage[q], db[s], ignore.strand = FALSE)
+  ok <- !is.na(d) & d <= max.dist
+  q <- q[ok]; s <- s[ok]; d <- d[ok]
+
+  has_loc <- if (location_col %in% colnames(polyAdb)) {
+    l <- as.character(polyAdb[[location_col]])[s]
+    !is.na(l) & nzchar(l)
+  } else rep(TRUE, length(s))
+
+  # per peak: nearest distance, then non-empty location, then first table row
+  o <- order(q, d, !has_loc, s)
+  q <- q[o]; s <- s[o]; d <- d[o]
+  first <- !duplicated(q)
+
+  out <- data.frame(row = rep(NA_integer_, length(ranges)),
+                    distance = rep(NA_integer_, length(ranges)))
+  out$row[q[first]]      <- s[first]
+  out$distance[q[first]] <- as.integer(d[first])
+  out
+}
+
+#' Annotate polyA sites with polyA_DB (reproducible GetPolyADbAnnotation)
+#'
+#' Drop-in replacement for \code{PASTA::GetPolyADbAnnotation()}: matches each
+#' polyA site (feature) of \code{assay} to polyA_DB and writes the matched
+#' site's columns into the assay's \code{meta.features}, with the same columns
+#' PASTA adds (\code{seqnames}, \code{start}, \code{end}, \code{width},
+#' \code{strand}, \code{peak}, plus the polyA_DB columns, e.g.
+#' \code{Intron.exon.location}, \code{ensembl_gene_id}, \code{Gene_Symbol},
+#' \code{hg38_Position}). The match is PASTA's (the site's 3' end, nearest
+#' polyA_DB site on the same strand, within \code{max.dist}), but when several
+#' polyA_DB rows are equally near -- the same site listed once per gene -- the
+#' choice is fixed (a row with a non-empty \code{location_col} first, then the
+#' first row of the table) instead of arbitrary. \code{FilterPeaks()} uses the
+#' same rule, so both always agree.
+#'
+#' @param seu Seurat object with a polyA assay.
+#' @param polyAdb.file Path to the polyA_DB table (e.g. \code{"polyAdb_mm10.txt"}).
+#' @param assay polyA assay name. Default \code{"polyA"}.
+#' @param max.dist Maximum distance (nt) between the site's 3' end and the
+#'   polyA_DB site. Default \code{50}.
+#' @param location_col polyA_DB column with the site location (used to break
+#'   ties). Default \code{"Intron.exon.location"}.
+#' @param verbose Print a summary. Default \code{TRUE}.
+#'
+#' @return \code{seu} with the annotation in \code{seu[[assay]]@meta.features}.
+#'   Features without a polyA_DB site within \code{max.dist} get \code{NA}.
+#'
+#' @examples
+#' \dontrun{
+#' seurat_obj <- AnnotatePolyADb(seurat_obj, polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
+#'                               max.dist = 50)
+#' table(seurat_obj[["polyA"]]@meta.features$Intron.exon.location, useNA = "ifany")
+#' }
+#'
+#' @export
+AnnotatePolyADb <- function(seu,
+                            polyAdb.file,
+                            assay        = "polyA",
+                            max.dist     = 50,
+                            location_col = "Intron.exon.location",
+                            verbose      = TRUE) {
+  if (!assay %in% SeuratObject::Assays(seu)) stop("Assay '", assay, "' not found in `seu`.")
+  if (missing(polyAdb.file) || !file.exists(polyAdb.file)) {
+    stop("`polyAdb.file` not found.")
+  }
+  a  <- seu[[assay]]
+  rg <- methods::slot(a, "ranges")
+  if ("*" %in% as.character(GenomicRanges::strand(rg))) {
+    stop("Cannot annotate unstranded polyA sites; remove sites with strand '*'.")
+  }
+  if (verbose) message("Reading polyA_DB: ", polyAdb.file)
+  polyAdb <- utils::read.table(file = polyAdb.file, header = TRUE)
+
+  m <- .MatchPolyADb(rg, polyAdb, max.dist = max.dist, location_col = location_col)
+
+  # same columns as PASTA::GetPolyADbAnnotation()
+  ann <- data.frame(
+    seqnames = as.character(GenomicRanges::seqnames(rg)),
+    start    = GenomicRanges::start(rg),
+    end      = GenomicRanges::end(rg),
+    width    = GenomicRanges::width(rg),
+    strand   = as.character(GenomicRanges::strand(rg)),
+    peak     = rownames(a),
+    stringsAsFactors = FALSE
+  )
+  db_cols <- setdiff(colnames(polyAdb), c("hg38_Chromosome_format", "Strand"))
+  for (cl in db_cols) ann[[cl]] <- polyAdb[[cl]][m$row]
+
+  mf <- a@meta.features
+  for (cl in colnames(ann)) mf[[cl]] <- ann[[cl]]
+  a@meta.features <- mf
+  seu[[assay]] <- a
+
+  if (verbose) {
+    message("AnnotatePolyADb: ", sum(!is.na(m$row)), " of ", length(m$row),
+            " sites matched a polyA_DB site within ", max.dist, " nt.")
+  }
+  seu
+}
+
 #' Filter and Standardize Genomic Peaks Across Samples
 #'
 #' This function standardizes peaks across all samples by creating a unified peak set,
-#' reducing overlaps, and counting sample representation. It also generates visualization
-#' plots showing peak distribution across samples.
+#' reducing overlaps, and counting sample representation. Optionally keeps only
+#' peaks whose polyA_DB site belongs to given gene biotypes (e.g.
+#' \code{"protein_coding"}). It also generates visualization plots showing peak
+#' distribution across samples.
 #'
 #' @param polyA.assays A list or collection of assay objects containing genomic ranges.
 #'   Each element should be compatible with \code{GenomicRanges::granges()}.
 #' @param multiple_samples set TRUE if multiple studies are analyzed together.
+#' @param polyAdb.file Path to the polyA_DB table (e.g. \code{"polyAdb_mm10.txt"},
+#'   the same file given to \code{PASTA::GetPolyADbAnnotation()}). Needed when
+#'   \code{biotypes} is set, unless \code{polyAdb} is given. When given (even
+#'   without \code{biotypes}), every peak is annotated with biotype and
+#'   location (\code{PeakMeta}, \code{SampleSummary}).
+#' @param polyAdb The polyA_DB table already read into R (alternative to
+#'   \code{polyAdb.file}). Must have \code{hg38_Chromosome_format},
+#'   \code{hg38_Position}, \code{Strand} and \code{biotype_col}.
+#' @param biotypes Character vector of gene biotypes to keep (values of
+#'   \code{biotype_col}), e.g. \code{"protein_coding"} or
+#'   \code{c("protein_coding", "lncRNA")}. \code{NULL} (default) = no filter.
+#' @param biotype_col Column of the polyA_DB table holding the biotype. Default
+#'   \code{"gene_biotype"}.
+#' @param location_col Column of the polyA_DB table holding the genomic location
+#'   of the site. Default \code{"Intron.exon.location"}.
+#' @param max.dist Maximum distance (nt) between a peak's 3' end and its
+#'   polyA_DB site. Default \code{50}, as in \code{PASTA::GetPolyADbAnnotation()};
+#'   use the same value there.
+#' @param plot Logical. Print the diagnostic plots. Default \code{TRUE}.
+#' @param verbose Logical. Print the biotype-filter summary. Default \code{TRUE}.
 #'
-#' @return A list with two elements:
+#' @return A list with:
 #'   \describe{
 #'     \item{Ranges}{A \code{GRanges} object containing the unified peak set after
-#'       reducing overlaps across all samples (strand-aware).}
+#'       reducing overlaps across all samples (strand-aware); only the kept peaks
+#'       when \code{biotypes} is set.}
 #'     \item{CommonPeaks}{An integer vector indicating the number of samples that
-#'       overlap with each peak in the unified set.}
+#'       overlap with each peak in \code{Ranges}.}
+#'     \item{PeakMeta}{When a polyA_DB is given: one row per unified peak,
+#'       ALL of them (before filtering): \code{peak}, \code{n_samples},
+#'       \code{distance} to the nearest polyA_DB site, \code{biotype},
+#'       \code{location}, \code{kept}. \code{NULL} otherwise.}
+#'     \item{SampleSummary}{Peaks per sample. With a polyA_DB: counts per
+#'       \code{sample} x \code{location} x \code{biotype} x \code{kept} (each
+#'       original peak inherits the annotation of its unified peak); without:
+#'       \code{sample}, \code{n}.}
+#'     \item{Audit}{Same as \code{PeakMeta} (kept for compatibility).}
 #'   }
 #'
 #' @details
@@ -264,6 +493,7 @@ CleanPolyAMetadata <- function(
 #'   \item Extracts all GRanges from individual assays
 #'   \item Creates a unified peak set by reducing overlapping ranges (strand-aware)
 #'   \item Counts how many samples each peak appears in
+#'   \item Optionally filters by gene biotype (see below)
 #'   \item Generates two diagnostic plots:
 #'     \itemize{
 #'       \item Number of peaks per sample (bar plot)
@@ -271,9 +501,16 @@ CleanPolyAMetadata <- function(
 #'     }
 #' }
 #'
+#' Annotation and biotype filter: each unified peak is matched to polyA_DB with
+#' the same rule as \code{\link{AnnotatePolyADb}()} -- the peak's 3' end, the
+#' nearest polyA_DB site on the same strand within \code{max.dist}, and a fixed
+#' choice when several polyA_DB rows are equally near. Annotate the Seurat
+#' object with \code{AnnotatePolyADb()} (same file and \code{max.dist}) and
+#' every peak gets the same annotation in both. Peaks without a polyA_DB site
+#' within \code{max.dist} have no biotype and are removed by the filter.
+#'
 #' @note The function prints combined plots to the current graphics device.
 #'   Requires the \code{patchwork} package for plot combination (using \code{|} operator).
-#'   A theme object \code{th} must be defined in the global environment.
 #'
 #' @examples
 #' \dontrun{
@@ -281,6 +518,12 @@ CleanPolyAMetadata <- function(
 #' results <- FilterPeaks(my_polyA_assays)
 #' unified_peaks <- results$Ranges
 #' sample_counts <- results$CommonPeaks
+#'
+#' # Only peaks at protein-coding polyA_DB sites
+#' results_pc <- FilterPeaks(my_polyA_assays, multiple_samples = TRUE,
+#'                           polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
+#'                           biotypes = "protein_coding", max.dist = 50)
+#' table(results_pc$Audit$biotype, useNA = "ifany")
 #' }
 #'
 #' @importFrom GenomicRanges granges reduce countOverlaps GRangesList
@@ -289,7 +532,16 @@ CleanPolyAMetadata <- function(
 #' @importFrom scales comma
 #'
 #' @export
-FilterPeaks <- function(polyA.assays, multiple_samples = NULL){
+FilterPeaks <- function(polyA.assays,
+                        multiple_samples = NULL,
+                        polyAdb.file     = NULL,
+                        polyAdb          = NULL,
+                        biotypes         = NULL,
+                        biotype_col      = "gene_biotype",
+                        location_col     = "Intron.exon.location",
+                        max.dist         = 50,
+                        plot             = TRUE,
+                        verbose          = TRUE) {
   # Before merging, standardize peaks across all samples
   # 1. Extract all GRanges from individual assays
   all.ranges <- lapply(polyA.assays, GenomicRanges::granges)
@@ -309,43 +561,131 @@ FilterPeaks <- function(polyA.assays, multiple_samples = NULL){
     peak_sample_counts <- GenomicRanges::countOverlaps(unified.peaks, unified.ranges, ignore.strand = FALSE)
   }
 
-  # Number of peaks per sample
-  samples <- names(polyA.assays)
-  Sample_peaks <-
-    data.frame(sample = samples, n_peaks = sapply(polyA.assays, function(x) length(granges(x)))) %>%
-    ggplot2::ggplot(ggplot2::aes(x = sample, y = n_peaks)) +
-    ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
-    ggplot2::labs(
-      title = "Peaks Across Samples",
-      x = NULL,
-      y = "Number of Peaks" ) +
-    th +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
-    ggplot2::scale_y_continuous(
-      labels = scales::comma,
-      n.breaks = 6 )
-  # Number of peaks shared by sample
-  Sample_shared <-
-    data.frame(peak_sample_counts) %>%
-    dplyr::count(peak_sample_counts) %>%
-    ggplot2::ggplot(ggplot2::aes(x = peak_sample_counts, y = n)) +
-    ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
-    ggplot2::labs(
-      title = "Common peaks Across Samples",
-      x = "Number of Samples",
-      y = "Number of Peaks" ) +
-    ggplot2::scale_x_continuous(breaks = 1:max(peak_sample_counts)) +
-    th +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
-    ggplot2::scale_y_continuous(
-      labels = scales::comma,
-      n.breaks = 6  )
+  # 3. Optional gene-biotype filter via polyA_DB (same matching rule as
+  #    PASTA::GetPolyADbAnnotation(): peak 3' end -> nearest same-strand
+  #    polyA_DB site, accepted within max.dist).
+  audit <- NULL
+  n_all <- length(unified.peaks)
+  unified.all <- unified.peaks                      # before any filtering
+  keep <- rep(TRUE, n_all)
+  bt <- loc <- rep(NA_character_, n_all)
+  annotate <- !is.null(biotypes) || !is.null(polyAdb) || !is.null(polyAdb.file)
+  if (annotate) {
+    if (!is.numeric(max.dist) || length(max.dist) != 1 || is.na(max.dist) || max.dist < 0) {
+      stop("`max.dist` must be a single number >= 0 (nt), e.g. 50 as in GetPolyADbAnnotation().")
+    }
+    if (is.null(polyAdb)) {
+      if (is.null(polyAdb.file) || !file.exists(polyAdb.file)) {
+        stop("Give `polyAdb.file` (existing path) or `polyAdb` when `biotypes` is set ",
+             "(and check that the path exists).")
+      }
+      polyAdb <- utils::read.table(file = polyAdb.file, header = TRUE)
+    }
+    if (!biotype_col %in% colnames(polyAdb)) {
+      stop("polyA_DB table has no column '", biotype_col, "'.")
+    }
+    if ("*" %in% as.character(GenomicRanges::strand(unified.peaks))) {
+      stop("Unstranded peaks found; cannot match polyA_DB strand-aware.")
+    }
 
-  # Display plots side by side - FOR R MARKDOWN
-  combined_plot <- Sample_peaks | Sample_shared
-  print(combined_plot)
+    # Same matching as AnnotatePolyADb() (used to annotate the Seurat object),
+    # so a peak gets the same polyA_DB row here and in the object.
+    m <- .MatchPolyADb(unified.peaks, polyAdb, max.dist = max.dist,
+                       location_col = location_col)
+    dist <- m$distance
+    bt   <- as.character(polyAdb[[biotype_col]])[m$row]
+    if (location_col %in% colnames(polyAdb)) {
+      loc <- as.character(polyAdb[[location_col]])[m$row]
+    }
 
-  return(list(Ranges=unified.peaks, CommonPeaks=peak_sample_counts))
+    if (!is.null(biotypes)) keep <- bt %in% biotypes
+    audit <- data.frame(
+      peak      = paste(GenomicRanges::seqnames(unified.peaks), GenomicRanges::start(unified.peaks),
+                        GenomicRanges::end(unified.peaks), GenomicRanges::strand(unified.peaks),
+                        sep = "-"),
+      n_samples = as.integer(peak_sample_counts),
+      distance  = dist,
+      biotype   = bt,
+      location  = loc,
+      kept      = keep,
+      stringsAsFactors = FALSE
+    )
+
+    if (verbose && !is.null(biotypes)) {
+      message(sprintf(
+        "Biotype filter {%s} (polyA_DB site within %s nt of the peak 3' end):\n  %d unified peaks\n  %d without a polyA_DB site within %s nt\n  %d at a site of another biotype\n  %d kept (%.1f%%)",
+        paste(biotypes, collapse = ", "), max.dist, n_all, sum(is.na(bt)), max.dist,
+        sum(!is.na(bt) & !keep), sum(keep), 100 * mean(keep)))
+      tb <- sort(table(bt, useNA = "no"), decreasing = TRUE)
+      message("  Biotypes of matched peaks: ",
+              paste0(names(tb)[seq_len(min(8, length(tb)))], " = ",
+                     tb[seq_len(min(8, length(tb)))], collapse = ", "))
+    }
+
+    unified.peaks      <- unified.peaks[keep]
+    peak_sample_counts <- peak_sample_counts[keep]
+  }
+
+  # 4. Per-sample summary: every original peak of each sample is mapped to its
+  #    unified peak (strand-aware; reduce() guarantees exactly one) and inherits
+  #    its annotation and whether it was kept. Returned as counts (one row per
+  #    sample x location x biotype x kept), not one row per original peak.
+  sample_summary <- dplyr::bind_rows(lapply(names(all.ranges), function(nm) {
+    idx <- GenomicRanges::findOverlaps(all.ranges[[nm]], unified.all,
+                                       ignore.strand = FALSE, select = "first")
+    if (!annotate) {
+      return(data.frame(sample = nm, n = length(all.ranges[[nm]]), stringsAsFactors = FALSE))
+    }
+    d <- data.frame(location = loc[idx], biotype = bt[idx], kept = keep[idx],
+                    stringsAsFactors = FALSE)
+    d <- dplyr::count(d, location, biotype, kept, name = "n")
+    cbind(sample = nm, d, stringsAsFactors = FALSE)
+  }))
+
+  if (isTRUE(plot)) {
+    # Number of peaks per sample
+    samples <- names(polyA.assays)
+    Sample_peaks <-
+      data.frame(sample = samples, n_peaks = sapply(polyA.assays, function(x) length(granges(x)))) %>%
+      ggplot2::ggplot(ggplot2::aes(x = sample, y = n_peaks)) +
+      ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
+      ggplot2::labs(
+        title = "Peaks Across Samples",
+        x = NULL,
+        y = "Number of Peaks" ) +
+      th +
+      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
+      ggplot2::scale_y_continuous(
+        labels = scales::comma,
+        n.breaks = 6 )
+    # Number of peaks shared by sample
+    Sample_shared <-
+      data.frame(peak_sample_counts) %>%
+      dplyr::count(peak_sample_counts) %>%
+      ggplot2::ggplot(ggplot2::aes(x = peak_sample_counts, y = n)) +
+      ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
+      ggplot2::labs(
+        title = if (is.null(biotypes)) "Common peaks Across Samples"
+                else paste0("Common peaks Across Samples (", paste(biotypes, collapse = ", "), ")"),
+        x = "Number of Samples",
+        y = "Number of Peaks" ) +
+      ggplot2::scale_x_continuous(breaks = 1:max(peak_sample_counts)) +
+      th +
+      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
+      ggplot2::scale_y_continuous(
+        labels = scales::comma,
+        n.breaks = 6  )
+
+    # Display plots side by side - FOR R MARKDOWN
+    combined_plot <- Sample_peaks | Sample_shared
+    print(combined_plot)
+  }
+
+  return(list(Ranges        = unified.peaks,
+              CommonPeaks   = peak_sample_counts,
+              PeakMeta      = audit,
+              SampleSummary = sample_summary,
+              Audit         = audit))   # same as PeakMeta (kept for compatibility)
 }
 
 #' Requantify PolyA Assays Using Unified Peaks
@@ -452,6 +792,135 @@ RequantifyPolyA <- function(polyA.assays,
   names(polyA.assays.unified) <- samples
 
   return(polyA.assays.unified)
+}
+
+#' Build the polyA assay of a Seurat object, end to end
+#'
+#' Runs the steps that follow \code{FilterPeaks()}: requantify every sample on
+#' the unified peaks (\code{RequantifyPolyA()}), merge the samples, attach the
+#' gene annotation (EnsDb), keep the cells present in both the Seurat object
+#' and the polyA data, add the polyA assay and annotate its sites with polyA_DB
+#' (\code{AnnotatePolyADb()}).
+#'
+#' @param seurat_obj Seurat object (RNA) the polyA assay is added to.
+#' @param polyA.assays Named list of per-sample polyA assays
+#'   (\code{UploadPolyAAssays()}).
+#' @param unified.peaks Output of \code{FilterPeaks()}.
+#' @param threshold Minimum number of samples a unified peak must be present in
+#'   (passed to \code{RequantifyPolyA()}).
+#' @param genome Genome build: \code{"mm10"}, \code{"hg38"}, \code{"hg19"} or
+#'   \code{"mm39"}. Used for the assays and the gene annotation.
+#' @param ensdb \code{EnsDb} object for the gene annotation. \code{NULL}
+#'   (default) picks it from \code{genome}: mm10 -> \code{EnsDb.Mmusculus.v79},
+#'   hg38 -> \code{EnsDb.Hsapiens.v86}, hg19 -> \code{EnsDb.Hsapiens.v75}
+#'   (give it explicitly for mm39). \code{FALSE} skips the gene annotation.
+#' @param polyAdb.file polyA_DB table for \code{AnnotatePolyADb()}. Use the
+#'   same file and \code{max.dist} as in \code{FilterPeaks()}. \code{NULL}
+#'   skips this annotation.
+#' @param max.dist Passed to \code{AnnotatePolyADb()}. Default \code{50}.
+#' @param assay Name of the polyA assay in \code{seurat_obj}. Default
+#'   \code{"polyA"}.
+#' @param set_default Make \code{assay} the default assay. Default \code{TRUE}.
+#' @param verbose Print progress. Default \code{TRUE}.
+#'
+#' @return \code{seurat_obj} restricted to the cells present in the polyA data,
+#'   with the polyA assay (gene annotation and polyA_DB annotation in its
+#'   \code{meta.features}).
+#'
+#' @examples
+#' \dontrun{
+#' PeaksFiltering <- FilterPeaks(polyA.assays, multiple_samples = TRUE,
+#'                               polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
+#'                               biotypes = "protein_coding", max.dist = 50)
+#' seurat_obj_filtered <- PolyAPipeline(seurat_obj_filtered, polyA.assays, PeaksFiltering,
+#'                                      threshold = 16, genome = "mm10",
+#'                                      polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
+#'                                      max.dist = 50)
+#' rm(polyA.assays)
+#' }
+#'
+#' @export
+PolyAPipeline <- function(seurat_obj,
+                          polyA.assays,
+                          unified.peaks,
+                          threshold,
+                          genome       = c("mm10", "hg38", "hg19", "mm39"),
+                          ensdb        = NULL,
+                          polyAdb.file = NULL,
+                          max.dist     = 50,
+                          assay        = "polyA",
+                          set_default  = TRUE,
+                          verbose      = TRUE) {
+  genome <- match.arg(genome)
+  if (!methods::is(seurat_obj, "Seurat")) stop("`seurat_obj` must be a Seurat object.")
+  if (missing(threshold)) stop("`threshold` is required (minimum number of samples per peak).")
+  if (!is.null(polyAdb.file) && !file.exists(polyAdb.file)) {
+    stop("`polyAdb.file` not found: ", polyAdb.file)
+  }
+
+  # gene annotation source
+  if (is.null(ensdb)) {
+    pkg <- switch(genome,
+                  mm10 = "EnsDb.Mmusculus.v79",
+                  hg38 = "EnsDb.Hsapiens.v86",
+                  hg19 = "EnsDb.Hsapiens.v75",
+                  mm39 = stop("No default EnsDb for mm39: pass `ensdb` (or ensdb = FALSE)."))
+    if (!requireNamespace(pkg, quietly = TRUE)) stop("Package '", pkg, "' is required.")
+    ensdb <- getExportedValue(pkg, pkg)
+  }
+
+  # 1. requantify every sample on the unified peaks
+  if (verbose) message("1/5 Requantifying ", length(polyA.assays), " sample(s) (threshold = ",
+                       threshold, ")...")
+  polyA.unified <- RequantifyPolyA(polyA.assays = polyA.assays, unified.peaks = unified.peaks,
+                                   threshold = threshold, genome = genome)
+
+  # 2. merge samples
+  if (verbose) message("2/5 Merging samples...")
+  polyA.merged <- if (length(polyA.unified) > 1) {
+    merge(x = polyA.unified[[1]], y = polyA.unified[2:length(polyA.unified)], merge.data = TRUE)
+  } else {
+    polyA.unified[[1]]
+  }
+  rm(polyA.unified); invisible(gc(verbose = FALSE))
+
+  # 3. gene annotation
+  if (!isFALSE(ensdb)) {
+    if (verbose) message("3/5 Adding gene annotation (", genome, ")...")
+    annotations <- suppressWarnings(Signac::GetGRangesFromEnsDb(ensdb = ensdb))
+    Signac::genome(annotations) <- genome
+    Signac::Annotation(polyA.merged) <- annotations
+  } else if (verbose) {
+    message("3/5 Gene annotation skipped (ensdb = FALSE).")
+  }
+
+  # 4. common cells + add the assay
+  cells <- intersect(colnames(seurat_obj), colnames(polyA.merged))
+  if (!length(cells)) {
+    stop("No cells in common between `seurat_obj` and the polyA data. Example names: '",
+         colnames(seurat_obj)[1], "' vs '", colnames(polyA.merged)[1], "'.")
+  }
+  if (verbose) {
+    message("4/5 Cells: ", length(cells), " in common (Seurat: ", ncol(seurat_obj),
+            ", polyA: ", ncol(polyA.merged), ").")
+  }
+  seurat_obj <- subset(seurat_obj, cells = cells)
+  seurat_obj[[assay]] <- subset(polyA.merged, cells = cells)
+  rm(polyA.merged); invisible(gc(verbose = FALSE))
+  if (isTRUE(set_default)) SeuratObject::DefaultAssay(seurat_obj) <- assay
+
+  # 5. polyA_DB annotation (same rule as FilterPeaks)
+  if (!is.null(polyAdb.file)) {
+    if (verbose) message("5/5 Annotating sites with polyA_DB (max.dist = ", max.dist, ")...")
+    seurat_obj <- AnnotatePolyADb(seurat_obj, polyAdb.file = polyAdb.file, assay = assay,
+                                  max.dist = max.dist, verbose = verbose)
+  } else if (verbose) {
+    message("5/5 polyA_DB annotation skipped (polyAdb.file = NULL).")
+  }
+
+  if (verbose) message("PolyAPipeline done: ", nrow(seurat_obj[[assay]]), " polyA sites x ",
+                       ncol(seurat_obj), " cells.")
+  seurat_obj
 }
 
 #' Plot PolyA Coverage for Differentially Expressed Sites
@@ -883,6 +1352,11 @@ PolyAPlot <- function(
 
   # Extract polyA sites for this gene
   polyA_gene <- polyAdb[polyAdb$Gene_Symbol %in% gene, ]
+  # polyAdb from DEPsMatrix(Pasta = TRUE) has one row per peak x cell type x
+  # comparison; the plot needs one row per site.
+  if ("peak" %in% colnames(polyA_gene)) {
+    polyA_gene <- dplyr::distinct(polyA_gene, peak, .keep_all = TRUE)
+  }
 
   # Bug fix: "Shared" used to be hardcoded to `length(conds) == 3` with a
   # comment claiming that means "all 4 conditions" (a leftover/wrong comment
@@ -1399,7 +1873,7 @@ DEPolyAPeaks <- function(
   ident_1 <- paste0(celltype, "_", ident1)
   ident_2 <- paste0(celltype, "_", ident2)
 
-  if (verbose) message("Running DEGs for: ", ident_1, " vs ", ident_2)
+  if (verbose) message("Running DEPs for: ", ident_1, " vs ", ident_2)
 
   # Run differential expression test
   if (!requireNamespace("PASTA", quietly = TRUE)) {
@@ -1430,7 +1904,7 @@ DEPolyAPeaks <- function(
 #' Joins a \code{DEPolyAPeaks()} result table (per cell type) with the polyA
 #' assay's peak metadata (\code{meta.features}) and the RNA assay's gene
 #' metadata, then stamps a \code{Condition} label and de-duplicates by peak.
-#' Internal helper for \code{DEPsMatrix()}; mirrors the "Merge DEGs with
+#' Internal helper for \code{DEPsMatrix()}; mirrors the "Merge DEPs with
 #' metadata" step previously written inline in the analysis scripts.
 #'
 #' @param deg_df A per-cell-type \code{DEPolyAPeaks()} result (must contain a
@@ -1578,6 +2052,12 @@ DEPolyAPeaks <- function(
 #' @param background_sep Separator for \code{background_cols}. Default \code{""}
 #'   (e.g. \code{Treatment}+\code{Strain} -> \code{"ControlB6"}).
 #' @param min.counts.background Passed to \code{CalcPolyAResiduals()}. Default 5.
+#' @param modified_residuals Logical. Which residual implementation to use when
+#'   \code{Pasta = TRUE}. \code{FALSE} (default) uses the canonical
+#'   \code{PASTA::CalcPolyAResiduals()}; \code{TRUE} uses this package's
+#'   modified \code{\link{CalcPolyAResidualsPolyA}}. Both write the residuals
+#'   to the polyA assay's \code{"scale.data"} layer, so the rest of the
+#'   pipeline is identical. Ignored when \code{Pasta = FALSE}.
 #' @param Pasta Logical. If \code{TRUE} (default), run PASTA residuals +
 #'   differential testing; if \code{FALSE}, skip both and compute RED from
 #'   counts only (PASTA stat columns are \code{NA}).
@@ -1596,8 +2076,15 @@ DEPolyAPeaks <- function(
 #'   lacks the required pseudobulk columns for a given comparison (e.g. no cells
 #'   in one condition) is skipped for that comparison with a warning rather than
 #'   erroring. Default 10.
-#' @param filter_method,mincounts Passed to the RED core. Default
-#'   \code{"edgeR"}, 10.
+#' @param filter_method Peak filter applied in each cell type x comparison
+#'   block before pairing (same options as \code{DEGsMatrix()}).
+#'   \code{"edgeR"} (default): \code{edgeR::filterByExpr()} with the block's
+#'   treatment/control design; \code{"manual"}: keep peaks with
+#'   \code{rowSums(counts) >= mincounts}; \code{"none"}: keep all peaks.
+#' @param mincounts Threshold for \code{filter_method = "manual"}. Default 10.
+#' @param filterByExpr_args Named list of extra arguments for
+#'   \code{edgeR::filterByExpr()} (e.g. \code{list(min.count = 5)}).
+#'   Default \code{list()}.
 #' @param gdpau_min_reads Minimum total supporting reads a group must have (for
 #'   the gene, for gDPAU; for the site pair, for DPAU) to compute the index
 #'   there; below this that group's value is \code{NA}, making the
@@ -1637,6 +2124,49 @@ DEPolyAPeaks <- function(
 #'   columns are \code{NA} by construction, and \code{RED_LRT_cov_*} is
 #'   \code{NA} without a \code{covariate_formula}. Default \code{TRUE}; set
 #'   \code{FALSE} to keep a fixed column layout.
+#' @param pair_rule How the proximal/distal pair of each gene is chosen, per
+#'   RED type. \code{"max"} (default): the pair with the largest combined
+#'   change in proportion between treatment and control. \code{"top"}: the
+#'   most-used sites from pooled treatment + control reads of the comparison
+#'   (REDu: the two most-used 3'-most-exon sites; REDi: the most-used intronic
+#'   site and the most-used 3'-most-exon site downstream of it), which does not
+#'   depend on the treatment-vs-control difference.
+#' @param red_tests Tests of the proximal/distal usage change reported per
+#'   pair, any of \code{"LRT"} (binomial GLM likelihood-ratio test on
+#'   per-replicate counts), \code{"fisher"} (Fisher's exact test on pooled
+#'   counts) and \code{"ttest"} (t-test on per-replicate log2(d/p)). Each adds
+#'   \code{RED_<test>_pval} / \code{RED_<test>_padj} (BH per cell type x
+#'   comparison x RED type). Default all three; fewer = faster.
+#' @param parallel Logical. Compute the (cell type x comparison) blocks in
+#'   parallel (BiocParallel; forking on macOS/Linux). Default \code{FALSE}
+#'   (sequential). Results are identical either way.
+#' @param ncores Number of workers when \code{parallel = TRUE}. \code{NULL}
+#'   (default) = all cores but one.
+#' @param BPPARAM Optional BiocParallel back-end (overrides
+#'   \code{parallel}/\code{ncores}), e.g. \code{BiocParallel::MulticoreParam(8)}.
+#' @param exclude_peaks Logical. Remove "phantom" peaks (counts in the matrix
+#'   but no reads in their window of the fragment files; see
+#'   \code{PeakAudit()}) before pairing. Default \code{FALSE}.
+#' @param peak_audit Optional output of \code{PeakAudit()} to reuse. If
+#'   \code{NULL} and \code{exclude_peaks = TRUE}, it is computed (slow).
+#' @param phantom_min_counts,phantom_max_ratio Passed to \code{PeakAudit()}
+#'   when it is computed here. Defaults \code{50} and \code{0.1}.
+#' @param min_site_reads Minimum mean reads per replicate of EACH site of the
+#'   pair in EACH group for \code{ok_reads}. Default \code{10}.
+#' @param min_site_usage Minimum share of the gene's pooled reads of each site
+#'   of the pair for \code{ok_usage}. Default \code{0.05}.
+#' @param min_rep_pairs Minimum \code{rep_pairs_frac} for \code{ok_replicates}.
+#'   Default \code{0.9}.
+#' @param return_filter Logical. Also return \code{$filter}, with the same
+#'   structure as \code{PseudobulkFilter()} so it can be passed to
+#'   \code{QCDensity()}: the pseudobulk counts each (cell type x comparison)
+#'   block filtered (\code{$pseudobulk}, \code{$sample_meta} with
+#'   \code{replicate} and \code{n_cells} per pseudobulk sample), the peaks
+#'   entering DEPsMatrix before PASTA (\code{$input}), the peaks each block saw
+#'   after PASTA (\code{$tested}) and kept after the expression filter
+#'   (\code{$kept}), and \code{$summary} (peaks in / kept, status). Plot the
+#'   three stages with \code{QCDensity(stage = "input" / "before" / "after")}.
+#'   Default \code{FALSE}.
 #' @param return_seurat Logical. The result is always a list with
 #'   \code{$red_scores} and \code{$polyAdb} (see \strong{Value}). If
 #'   \code{TRUE}, the list additionally includes \code{$seu} -- the
@@ -1656,12 +2186,27 @@ DEPolyAPeaks <- function(
 #'   gene's sites; equals DPAU when \eqn{n=2}). A group with fewer than
 #'   \code{gdpau_min_reads} supporting reads gives \code{NA}.
 #'
+#'   Quantifiability of each pair: \code{p_/d_reads_control},
+#'   \code{p_/d_reads_treatment} (mean reads per replicate), \code{p_/d_usage}
+#'   (share of the gene's pooled reads), \code{rep_pairs_frac} (fraction of
+#'   treatment-vs-control replicate match-ups, e.g. 4 x 4 = 16, in which the
+#'   treated \eqn{\log_2(d/p)} lies in the direction of RED; 1 = complete
+#'   separation), the flags \code{ok_reads}, \code{ok_usage},
+#'   \code{ok_replicates}, and \code{quantifiable} (all three \code{TRUE}).
+#'
 #'   Always returns a \strong{list}: \code{$red_scores} (the RED table above,
-#'   suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb} (the
-#'   analyzed peak-level table -- one row per peak, TE handling applied, with a
-#'   \code{Repeated_Masker} flag -- suitable as \code{PolyAPlot()}'s
-#'   \code{polyAdb}). With \code{return_seurat = TRUE} the list also has
-#'   \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object.
+#'   suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb}
+#'   (the analyzed sites, TE handling applied, with a \code{Repeated_Masker}
+#'   flag -- suitable as \code{PolyAPlot()}'s \code{polyAdb}). With
+#'   \code{Pasta = TRUE}, \code{$polyAdb} holds the full PASTA results: one row
+#'   per peak x cell type (\code{CellType}) x comparison (\code{Condition}) with
+#'   the \code{DEPolyAPeaks()} statistics (\code{Estimate}, \code{p.value},
+#'   \code{p_val_adj}, \code{percent.1}, \code{percent.2}) plus the peak/gene
+#'   annotation. With \code{Pasta = FALSE}, it is the plain peak-level table,
+#'   one row per peak. With \code{return_seurat = TRUE} the list also has
+#'   \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object;
+#'   with \code{exclude_peaks = TRUE}, \code{$peak_audit}; with
+#'   \code{return_filter = TRUE}, \code{$filter}.
 #'
 #' @examples
 #' \dontrun{
@@ -1707,10 +2252,12 @@ DEPsMatrix <- function(
     background_sep      = "",
     min.counts.background = 5,
     Pasta               = TRUE,
+    modified_residuals  = FALSE,
     de_features         = NULL,
     min_cells           = 10,
-    filter_method       = "edgeR",
+    filter_method       = c("edgeR", "manual", "none"),
     mincounts           = 10,
+    filterByExpr_args   = list(),
     gdpau_min_reads     = 5,
     covariates          = NULL,
     sample_metadata     = NULL,
@@ -1724,12 +2271,33 @@ DEPsMatrix <- function(
     rmsk                = NULL,
     repeat_masker_positions = "Intron",
     drop_na_cols        = TRUE,
+    pair_rule           = c("max", "top"),
+    red_tests           = c("LRT", "fisher", "ttest"),
+    parallel            = FALSE,
+    ncores              = NULL,
+    BPPARAM             = NULL,
+    exclude_peaks       = FALSE,
+    peak_audit          = NULL,
+    phantom_min_counts  = 50,
+    phantom_max_ratio   = 0.1,
+    min_site_reads      = 10,
+    min_site_usage      = 0.05,
+    min_rep_pairs       = 0.9,
+    return_filter       = FALSE,
     return_seurat       = FALSE,
     verbose             = TRUE
 ) {
 
   # ---- Validation -----------------------------------------------------------
   repeat_masker <- match.arg(repeat_masker)
+  pair_rule     <- match.arg(pair_rule)
+  red_tests     <- match.arg(red_tests, several.ok = TRUE)
+  filter_method <- match.arg(filter_method)
+  if (filter_method == "manual" &&
+      (!is.numeric(mincounts) || length(mincounts) != 1 || mincounts < 0)) {
+    stop("`mincounts` must be a single non-negative number.")
+  }
+  if (!is.list(filterByExpr_args)) stop("`filterByExpr_args` must be a named list.")
   if (!methods::is(seu, "Seurat")) stop("`seu` must be a Seurat object.")
   if (repeat_masker != "none" && is.null(rmsk)) {
     stop("`rmsk` (a RepeatMasker table with genoName/genoStart/genoEnd/strand ",
@@ -1856,8 +2424,22 @@ DEPsMatrix <- function(
     if (!requireNamespace("PASTA", quietly = TRUE)) {
       stop("Package 'PASTA' is required when Pasta = TRUE.")
     }
-    if (verbose) message("Calculating polyA residuals (PASTA::CalcPolyAResiduals)...")
-    seu <- PASTA::CalcPolyAResiduals(
+    # Residuals: PASTA's canonical implementation by default, or this package's
+    # modified one when `modified_residuals = TRUE`. Both take the same
+    # arguments and both return a Seurat object carrying the residuals in the
+    # polyA assay's "scale.data" layer, so everything downstream is unchanged.
+    .calc_residuals <- if (isTRUE(modified_residuals)) {
+      CalcPolyAResidualsPolyA
+    } else {
+      PASTA::CalcPolyAResiduals
+    }
+    if (verbose) {
+      message("Calculating polyA residuals (",
+              if (isTRUE(modified_residuals)) "CalcPolyAResidualsPolyA, modified"
+              else "PASTA::CalcPolyAResiduals",
+              ")...")
+    }
+    seu <- .calc_residuals(
       seu,
       assay                 = assay,
       features              = features,
@@ -2061,6 +2643,30 @@ DEPsMatrix <- function(
     te_peaks_all <- te_peaks
   }
 
+  # ---- Exclude peaks without fragment support ("phantom") -----------------
+  # A peak with counts in the matrix but (almost) no reads in its own window
+  # of the fragment files cannot be trusted (see PeakAudit()). Applied, like
+  # the TE filter, after residuals/differential testing and before pairing.
+  if (isTRUE(exclude_peaks)) {
+    if (is.null(peak_audit)) {
+      peak_audit <- PeakAudit(seu, peaks = unique(Peaks_all$peak), assay = assay,
+                              phantom_min_counts = phantom_min_counts,
+                              phantom_max_ratio  = phantom_max_ratio,
+                              verbose = verbose)
+    }
+    if (!all(c("peak", "phantom") %in% colnames(peak_audit))) {
+      stop("`peak_audit` must be the output of PeakAudit() (columns `peak`, `phantom`).")
+    }
+    bad_peaks <- peak_audit$peak[peak_audit$phantom %in% TRUE]
+    n_bad <- length(intersect(unique(Peaks_all$peak), bad_peaks))
+    Peaks_all <- Peaks_all[!(Peaks_all$peak %in% bad_peaks), , drop = FALSE]
+    if (verbose) {
+      message("exclude_peaks: removed ", n_bad,
+              " peak(s) with counts but no fragment support.")
+    }
+    if (nrow(Peaks_all) == 0) stop("All peaks were removed by exclude_peaks.")
+  }
+
   # Sanitize cell-type labels with the SAME transform R applies to the
   # pseudobulk column names (as.data.frame() -> make.names()), so treatment/
   # control prefixes match the pseudobulk columns regardless of whether the
@@ -2083,6 +2689,46 @@ DEPsMatrix <- function(
   pseudo <- as.data.frame(pseudo)
   pseudo$peak <- rownames(pseudo)
 
+  # For return_filter: cells and replicate of every pseudobulk column. The
+  # column name "<assay>.<v1>_<v2>_..._<vk>" holds the group.by values in order
+  # (Seurat turns "_" inside values into "-", may prefix a leading digit with
+  # "g", and make.names() turns spaces / "/" into "."). Both the name tokens and
+  # each cell's metadata values are normalised the same way (alphanumerics
+  # only, no g/X before a leading digit) and cells are counted per sample.
+  pb_sample_info <- NULL
+  if (isTRUE(return_filter)) {
+    pb_sample_info <- tryCatch({
+      .canon <- function(x) {
+        x <- gsub("[^A-Za-z0-9]", "", as.character(x))
+        sub("^[gX]([0-9])", "\\1", x)
+      }
+      md_g <- seu@meta.data[, group.by, drop = FALSE]
+      cell_key <- do.call(paste, c(lapply(md_g, .canon), sep = "|"))
+      n_by_key <- table(cell_key)
+
+      sid <- setdiff(colnames(pseudo), "peak")
+      tok <- strsplit(sub(paste0("^", assay, "\\."), "", sid), "_", fixed = TRUE)
+      rep_cols <- setdiff(group.by, c(condition_cols, celltype_col))
+      ok_len <- lengths(tok) == length(group.by)
+      key <- vapply(tok, function(t) paste(.canon(t), collapse = "|"), character(1))
+      n_cells <- ifelse(ok_len, as.integer(n_by_key[key]), NA_integer_)
+      replicate <- vapply(tok, function(t) {
+        if (length(t) != length(group.by) || !length(rep_cols)) return(NA_character_)
+        paste(t[match(rep_cols, group.by)], collapse = "_")
+      }, character(1))
+      if (verbose && any(is.na(n_cells))) {
+        message("Note: cells could not be counted for ", sum(is.na(n_cells)), " of ",
+                length(sid), " pseudobulk sample(s) (e.g. '", sid[is.na(n_cells)][1], "').")
+      }
+      data.frame(sample_id = sid, n_cells = n_cells, replicate = replicate,
+                 stringsAsFactors = FALSE)
+    }, error = function(e) {
+      if (verbose) message("Note: could not compute cells per pseudobulk sample (",
+                           conditionMessage(e), "); n_cells left NA.")
+      NULL
+    })
+  }
+
   # ---- RED scores per (cell type x comparison) -----------------------------
   extra_cols <- setdiff(colnames(comparisons), req_comp)
 
@@ -2091,53 +2737,115 @@ DEPsMatrix <- function(
   # types silently disappear from the result).
   block_fail  <- character(0)
   block_empty <- character(0)
+  block_filter <- list()   # per-block peak filter outcome (return_filter)
 
-  results <- lapply(seq_len(nrow(comparisons)), function(ci) {
+  # Report the actual amount of work rather than a vague warning: the run time
+  # scales with (cell types x comparisons), so this tells the user what to
+  # expect and makes a surprising block count obvious up front.
+  if (verbose) {
+    message(sprintf(
+      "Calculating RED scores: %d cell type(s) x %d comparison(s) = %d block(s). This may take a while...",
+      length(celltypes_red), nrow(comparisons),
+      length(celltypes_red) * nrow(comparisons)))
+  }
+
+  # One task per (comparison x cell type), comparison-major as before. Tasks
+  # are independent, so they can run in parallel (ncores / BPPARAM); each
+  # returns its result and its bookkeeping instead of writing to shared
+  # variables, and everything is assembled afterwards in the same order.
+  tasks <- expand.grid(ct = celltypes_red, ci = seq_len(nrow(comparisons)),
+                       stringsAsFactors = FALSE)
+
+  .run_block <- function(k) {
+    ci  <- tasks$ci[k]
+    ct  <- tasks$ct[k]
     cmp <- comparisons[ci, ]
-    red_ct <- lapply(celltypes_red, function(ct) {
-      # A cell type may pass the overall min_cells threshold yet still lack
-      # enough cells in one condition of THIS comparison, so its pseudobulk
-      # treatment/control columns can be missing -- the RED core stops in that
-      # case. Skip (recording why) rather than aborting the whole run.
-      red <- tryCatch(
-        .RedScoresCellType(
-          Peaks             = Peaks_all,
-          counts_polyA      = pseudo,
-          CellType          = ct,
-          treatment         = cmp$treatment,
-          control           = cmp$control,
-          # Only filter Peaks by Condition when PASTA populated it per-comparison;
-          # in the no-PASTA branch the same peak rows serve every comparison.
-          Condition         = if (isTRUE(Pasta)) cmp$Condition else NULL,
-          filter_method     = filter_method,
-          mincounts         = mincounts,
-          sample_metadata   = sample_metadata,
-          covariate_formula = covariate_formula,
-          gdpau_min_reads   = gdpau_min_reads
-        ),
-        error = function(e) {
-          block_fail <<- c(block_fail,
-                           paste0("[", canonical_by_san[[ct]], " / ", cmp$Condition, "] ",
-                                  conditionMessage(e)))
-          NULL
-        }
-      )
-      if (is.null(red)) return(NULL)
-      if (nrow(red) == 0) {
-        block_empty <<- c(block_empty,
-                          paste0(canonical_by_san[[ct]], " / ", cmp$Condition))
-        return(NULL)
+    err <- NULL
+    # A cell type may pass the overall min_cells threshold yet still lack
+    # enough cells in one condition of THIS comparison, so its pseudobulk
+    # treatment/control columns can be missing -- the RED core stops in that
+    # case. Skip (recording why) rather than aborting the whole run.
+    red <- tryCatch(
+      .RedScoresCellType(
+        Peaks             = Peaks_all,
+        counts_polyA      = pseudo,
+        CellType          = ct,
+        treatment         = cmp$treatment,
+        control           = cmp$control,
+        # Only filter Peaks by Condition when PASTA populated it per-comparison;
+        # in the no-PASTA branch the same peak rows serve every comparison.
+        Condition         = if (isTRUE(Pasta)) cmp$Condition else NULL,
+        filter_method     = filter_method,
+        mincounts         = mincounts,
+        filterByExpr_args = filterByExpr_args,
+        sample_metadata   = sample_metadata,
+        covariate_formula = covariate_formula,
+        gdpau_min_reads   = gdpau_min_reads,
+        pair_rule         = pair_rule,
+        min_site_reads    = min_site_reads,
+        min_site_usage    = min_site_usage,
+        min_rep_pairs     = min_rep_pairs,
+        keep_counts       = isTRUE(return_filter),
+        red_tests         = red_tests
+      ),
+      error = function(e) {
+        err <<- paste0("[", canonical_by_san[[ct]], " / ", cmp$Condition, "] ",
+                       conditionMessage(e))
+        NULL
       }
+    )
+    fi <- if (!is.null(red)) attr(red, "red_filter") else NULL
+    filt <- list(
+      Cells = canonical_by_san[[ct]], Condition = cmp$Condition,
+      treatment = cmp$treatment, control = cmp$control,
+      red_status = if (is.null(red)) "error" else if (nrow(red) == 0) "empty" else "ok",
+      n_peaks = if (is.null(fi)) NA_integer_ else fi$n_peaks,
+      n_kept  = if (is.null(fi)) NA_integer_ else fi$n_kept,
+      kept    = if (is.null(fi)) character(0) else fi$kept,
+      counts  = if (is.null(fi)) NULL else fi$counts,
+      samples = if (is.null(fi)) NULL else fi$samples
+    )
+    empty <- if (!is.null(red) && nrow(red) == 0) {
+      paste0(canonical_by_san[[ct]], " / ", cmp$Condition)
+    } else NULL
+    if (!is.null(red) && nrow(red) > 0) {
       # Report the canonical (Seurat-object) cell-type name, not the dotted one.
       red$Cells     <- canonical_by_san[[ct]]
       red$Condition <- cmp$Condition
       for (col in extra_cols) red[[col]] <- cmp[[col]]
-      red
-    })
-    dplyr::bind_rows(red_ct[!vapply(red_ct, is.null, logical(1))])
-  })
+    } else {
+      red <- NULL
+    }
+    list(red = red, fail = err, empty = empty, filter = filt)
+  }
 
-  out <- dplyr::bind_rows(results)
+  if (isTRUE(parallel) && is.null(BPPARAM)) {
+    if (is.null(ncores)) ncores <- max(1L, parallel::detectCores() - 1L)
+  } else if (is.null(BPPARAM)) {
+    ncores <- 1L
+  }
+  if (is.null(BPPARAM) && ncores > 1) {
+    BPPARAM <- if (.Platform$OS.type == "windows") {
+      BiocParallel::SnowParam(workers = ncores, progressbar = verbose)
+    } else {
+      BiocParallel::MulticoreParam(workers = ncores, progressbar = verbose)
+    }
+  }
+  if (!is.null(BPPARAM)) {
+    if (verbose) message("Running ", nrow(tasks), " block(s) on ",
+                         BiocParallel::bpnworkers(BPPARAM), " worker(s)...")
+    block_res <- BiocParallel::bplapply(seq_len(nrow(tasks)), .run_block, BPPARAM = BPPARAM)
+  } else {
+    block_res <- lapply(seq_len(nrow(tasks)), .run_block)
+  }
+
+  out          <- dplyr::bind_rows(lapply(block_res, `[[`, "red"))
+  block_fail   <- unlist(lapply(block_res, `[[`, "fail"))
+  block_empty  <- unlist(lapply(block_res, `[[`, "empty"))
+  block_filter <- lapply(block_res, `[[`, "filter")
+  if (is.null(block_fail))  block_fail  <- character(0)
+  if (is.null(block_empty)) block_empty <- character(0)
+  rm(block_res)
 
   # Report skipped blocks up front -- a cell type missing from the result is
   # almost always one of these, not a real biological absence.
@@ -2206,23 +2914,231 @@ DEPsMatrix <- function(
     }
   }
 
-  # A peak-level table (one row per peak) of exactly the sites that were
-  # analyzed, with TE handling already applied (TE peaks removed in "Remove"
-  # mode) and a per-peak `Repeated_Masker` flag. This is the `polyAdb` argument
-  # PolyAPlot() expects -- returning it means callers don't have to keep a
-  # separate Peaksdb() output around, and the plotted sites match the analyzed
-  # set.
-  polyAdb <- dplyr::distinct(Peaks_all, peak, .keep_all = TRUE)
+  # `polyAdb`: the analyzed sites, with TE handling already applied (TE peaks
+  # removed in "Remove" mode) and a per-peak `Repeated_Masker` flag. This is
+  # the `polyAdb` argument PolyAPlot() expects -- returning it means callers
+  # don't have to keep a separate Peaksdb() output around, and the plotted
+  # sites match the analyzed set.
+  #
+  # Pasta = TRUE: the FULL PASTA table -- one row per peak x cell type x
+  # comparison, with the DEPolyAPeaks() statistics of every block. (It used to
+  # be distinct(peak), which kept only the first block's statistics for each
+  # peak and silently dropped all other cell types / conditions.) CellType is
+  # reported with its canonical (Seurat-object) name.
+  # Pasta = FALSE: the plain peak-level table, one row per peak, without the
+  # per-cell-type replication and the NA placeholder statistic columns.
+  if (isTRUE(Pasta)) {
+    polyAdb <- Peaks_all
+    san <- as.character(polyAdb$CellType)
+    polyAdb$CellType <- ifelse(san %in% names(canonical_by_san),
+                               unname(canonical_by_san[san]), san)
+    polyAdb <- dplyr::relocate(polyAdb, dplyr::any_of(c("peak", "CellType", "Condition")))
+    rownames(polyAdb) <- NULL
+  } else {
+    polyAdb <- dplyr::distinct(Peaks_all, peak, .keep_all = TRUE)
+    polyAdb <- polyAdb[, setdiff(colnames(polyAdb),
+                                 c("CellType", "Estimate", "p.value", "p_val_adj",
+                                   "percent.1", "percent.2")), drop = FALSE]
+  }
   polyAdb$Repeated_Masker <- .te_flag(polyAdb$peak)
 
-  # Always return a list so `polyAdb` (the analyzed peak-level table, one row per
-  # peak, TE handling applied) is available regardless of `return_seurat`.
+  # Always return a list so `polyAdb` (see above; TE handling applied) is
+  # available regardless of `return_seurat`.
   # `return_seurat = TRUE` additionally includes the (residual-bearing, when
   # Pasta = TRUE) Seurat object for PolyAPlot() coverage tracks.
-  if (isTRUE(return_seurat)) {
-    return(list(red_scores = out, seu = seu, polyAdb = polyAdb))
+  res <- list(red_scores = out, polyAdb = polyAdb)
+  if (isTRUE(return_seurat)) res$seu <- seu
+
+  # Peak audit used for exclude_peaks (reuse it via `peak_audit =` next run).
+  if (isTRUE(exclude_peaks)) res$peak_audit <- peak_audit
+
+  # Per-block peak filter: how many peaks each (cell type x comparison) had
+  # before/after filterByExpr (or the manual filter), and which were kept.
+  # Same structure as PseudobulkFilter(), so it can be passed to QCDensity().
+  if (isTRUE(return_filter)) {
+    res$filter <- .BuildDEPsFilter(block_filter, comparisons, assay, filter_method,
+                                   pseudo         = pseudo,
+                                   input_features = features,
+                                   sample_info    = pb_sample_info)
   }
-  list(red_scores = out, polyAdb = polyAdb)
+  res
+}
+
+#' Assemble DEPsMatrix(return_filter = TRUE)$filter (internal)
+#'
+#' Builds the same structure as \code{PseudobulkFilter()} from the counts each
+#' (cell type x comparison) block actually filtered, so \code{QCDensity()}
+#' plots exactly what \code{DEPsMatrix()} used. Three peak sets:
+#' \code{input} = every peak entering DEPsMatrix (before PASTA; "input" stage),
+#' \code{tested} = the peaks each block saw before the expression filter, i.e.
+#' after PASTA ("before" stage), \code{kept} = after the filter ("after").
+#' @noRd
+.BuildDEPsFilter <- function(block_filter, comparisons, assay, filter_method,
+                             pseudo = NULL, input_features = NULL,
+                             sample_info = NULL) {
+  has_counts <- vapply(block_filter, function(b) !is.null(b$counts), logical(1))
+
+  summary <- dplyr::bind_rows(lapply(block_filter, function(b)
+    tibble::tibble(Cells = b$Cells, Condition = b$Condition,
+                   treatment = b$treatment, control = b$control,
+                   n_in = b$n_peaks, n_kept = b$n_kept,
+                   status = if (!is.null(b$counts)) "ok" else "error",
+                   red_status = b$red_status)))
+
+  kept <- dplyr::bind_rows(lapply(block_filter, function(b)
+    if (length(b$kept)) tibble::tibble(Cells = b$Cells, Condition = b$Condition,
+                                       feature = b$kept)))
+  tested <- dplyr::bind_rows(lapply(block_filter[has_counts], function(b)
+    tibble::tibble(Cells = b$Cells, Condition = b$Condition,
+                   feature = rownames(b$counts))))
+
+  sample_meta <- dplyr::bind_rows(lapply(block_filter[has_counts], function(b)
+    data.frame(sample_id = b$samples$sample_id, Cells = b$Cells,
+               label = b$samples$label, replicate = b$samples$sample_id,
+               n_cells = NA_integer_, stringsAsFactors = FALSE)))
+  sample_meta <- sample_meta[!duplicated(sample_meta$sample_id), , drop = FALSE]
+  rownames(sample_meta) <- NULL
+  if (!is.null(sample_info)) {
+    m <- match(sample_meta$sample_id, sample_info$sample_id)
+    sample_meta$n_cells   <- sample_info$n_cells[m]
+    sample_meta$replicate <- ifelse(is.na(sample_info$replicate[m]),
+                                    sample_meta$replicate, sample_info$replicate[m])
+  }
+
+  # One peaks x samples matrix. A control shared by several comparisons
+  # appears in several blocks with identical values -- keep it once.
+  rows <- unique(unlist(lapply(block_filter[has_counts], function(b) rownames(b$counts))))
+  trip <- dplyr::bind_rows(lapply(block_filter[has_counts], function(b) {
+    tm <- methods::as(b$counts, "TsparseMatrix")   # 0-based triplets
+    data.frame(i = match(rownames(b$counts)[tm@i + 1L], rows),
+               j = match(colnames(b$counts)[tm@j + 1L], sample_meta$sample_id),
+               x = tm@x)
+  }))
+  if (nrow(trip)) trip <- trip[!duplicated(trip[, c("i", "j")]), , drop = FALSE]
+  pb <- Matrix::sparseMatrix(i = trip$i, j = trip$j, x = trip$x,
+                             dims = c(length(rows), nrow(sample_meta)),
+                             dimnames = list(rows, sample_meta$sample_id))
+
+  # "input" stage: every peak entering DEPsMatrix (before PASTA), taken from
+  # the full pseudobulk for the same samples. Rows already in `pb` keep their
+  # block values (identical, both come from the same pseudobulk).
+  input <- NULL
+  if (!is.null(pseudo) && !is.null(input_features)) {
+    input <- intersect(as.character(input_features), rownames(pseudo))
+    extra <- setdiff(input, rownames(pb))
+    cols  <- intersect(sample_meta$sample_id, colnames(pseudo))
+    if (length(extra) && length(cols)) {
+      add <- matrix(0, nrow = length(extra), ncol = nrow(sample_meta),
+                    dimnames = list(extra, sample_meta$sample_id))
+      add[, cols] <- as.matrix(pseudo[extra, cols, drop = FALSE])
+      pb <- rbind(pb, Matrix::Matrix(add, sparse = TRUE))
+    }
+  }
+
+  list(
+    pseudobulk    = pb,
+    sample_meta   = sample_meta,
+    input         = input,
+    kept          = kept,
+    tested        = tested,
+    summary       = summary,
+    comparisons   = comparisons,
+    feature_type  = "peak",
+    assay         = assay,
+    filter_method = filter_method,
+    filter_scope  = "comparison"
+  )
+}
+
+#' Audit polyA peaks against their fragment-file support
+#'
+#' Compares, for every peak, the counts in the polyA count matrix with the
+#' number of fragment-file reads that fall in the peak's own window. A peak is
+#' flagged \code{phantom} when it has at least \code{phantom_min_counts} counts
+#' but fewer than \code{phantom_max_ratio} times as many fragment reads (e.g. a
+#' site with thousands of counts and 0 reads in its window). Such peaks cannot
+#' be trusted for site-usage analysis; \code{DEPsMatrix(exclude_peaks = TRUE)}
+#' removes them.
+#'
+#' Fragment files carry no strand, so peaks that overlap a peak on the opposite
+#' strand are flagged separately (\code{ambiguous_strand}): their fragment
+#' support cannot be attributed to one strand. Fragment reads are not
+#' UMI-deduplicated, so \code{ratio} is a support check, not a quantification.
+#'
+#' Counting fragments over many peaks takes a few minutes: compute the audit
+#' once and pass it to \code{DEPsMatrix(peak_audit = ...)}.
+#'
+#' @param seu Seurat object with a polyA assay that has fragment files attached.
+#' @param peaks Peaks to audit (rownames of the assay). \code{NULL} = all.
+#' @param assay PolyA assay name. Default \code{"polyA"}.
+#' @param phantom_min_counts Minimum matrix counts for a peak to be judged.
+#'   Default \code{50}.
+#' @param phantom_max_ratio A peak is \code{phantom} when
+#'   \code{frags / counts} is below this. Default \code{0.1}.
+#' @param verbose Logical. Print progress messages. Default \code{TRUE}.
+#'
+#' @return A \code{data.frame} with one row per peak: \code{peak},
+#'   \code{counts} (matrix), \code{frags} (fragment reads in the window),
+#'   \code{ratio}, \code{phantom}, \code{ambiguous_strand}.
+#'
+#' @examples
+#' \dontrun{
+#' audit <- PeakAudit(seu)
+#' table(audit$phantom)
+#' res <- DEPsMatrix(seu, ..., exclude_peaks = TRUE, peak_audit = audit)
+#' }
+#'
+#' @export
+PeakAudit <- function(seu,
+                      peaks              = NULL,
+                      assay              = "polyA",
+                      phantom_min_counts = 50,
+                      phantom_max_ratio  = 0.1,
+                      verbose            = TRUE) {
+  if (!assay %in% SeuratObject::Assays(seu)) stop("Assay '", assay, "' not found in `seu`.")
+  if (!length(Signac::Fragments(seu[[assay]]))) {
+    stop("Assay '", assay, "' has no fragment files attached.")
+  }
+  mf <- seu[[assay]]@meta.features
+  if (is.null(peaks)) peaks <- rownames(mf)
+  peaks <- intersect(peaks, rownames(mf))
+  if (!length(peaks)) stop("None of `peaks` are features of assay '", assay, "'.")
+
+  if (verbose) message("Peak audit: counting fragments in ", length(peaks),
+                       " peak windows (this can take a few minutes)...")
+  gr <- Signac::StringToGRanges(peaks, sep = c("-", "-"))
+  fm <- Signac::FeatureMatrix(fragments = Signac::Fragments(seu[[assay]]),
+                              features = gr, cells = colnames(seu), verbose = FALSE)
+  frag_n <- Matrix::rowSums(fm)
+  names(frag_n) <- rownames(fm)
+
+  cm <- SeuratObject::LayerData(seu, assay = assay, layer = "counts")[peaks, , drop = FALSE]
+
+  # opposite-strand overlaps among all peaks of the assay
+  mf_gr <- GenomicRanges::makeGRangesFromDataFrame(
+    mf, seqnames.field = "seqnames", start.field = "start", end.field = "end",
+    strand.field = "strand", keep.extra.columns = FALSE)
+  names(mf_gr) <- rownames(mf)
+  ov <- GenomicRanges::findOverlaps(mf_gr, mf_gr, ignore.strand = TRUE)
+  q  <- S4Vectors::queryHits(ov)
+  s  <- S4Vectors::subjectHits(ov)
+  st <- as.character(GenomicRanges::strand(mf_gr))
+  opp <- unique(names(mf_gr)[q[st[q] != st[s]]])
+
+  audit <- data.frame(
+    peak   = peaks,
+    counts = unname(Matrix::rowSums(cm)),
+    frags  = unname(frag_n[peaks]),
+    stringsAsFactors = FALSE
+  )
+  audit$frags[is.na(audit$frags)] <- 0
+  audit$ratio            <- audit$frags / pmax(audit$counts, 1)
+  audit$phantom          <- audit$counts >= phantom_min_counts & audit$ratio < phantom_max_ratio
+  audit$ambiguous_strand <- audit$peak %in% opp
+
+  if (verbose) message("Peak audit: ", sum(audit$phantom), " phantom, ",
+                       sum(audit$ambiguous_strand), " ambiguous-strand peak(s).")
+  audit
 }
 
 #' Compute RED scores for a single cell type / comparison (internal RED core)
@@ -2321,11 +3237,21 @@ DEPsMatrix <- function(
     Condition   = NULL,
     filter_method = "edgeR",
     mincounts     = 10,
+    filterByExpr_args = list(),
     sample_metadata   = NULL,
     covariate_formula = NULL,
     gdpau_min_reads   = 5,
+    pair_rule         = c("max", "top"),
+    min_site_reads    = 10,
+    min_site_usage    = 0.05,
+    min_rep_pairs     = 0.9,
+    keep_counts       = FALSE,
+    red_tests         = c("LRT", "fisher", "ttest"),
     verbose           = FALSE
 ) {
+  red_tests <- match.arg(red_tests, several.ok = TRUE)
+
+  pair_rule <- match.arg(pair_rule)
 
   # --- Input validation ---
   # Note: the input column is "ensembl_gene_id" (lowercase, as produced by
@@ -2372,8 +3298,17 @@ DEPsMatrix <- function(
     counts_polyA
   }
 
-  has_treatment <- any(grepl(paste0(treatment, "_", CellType), colnames(counts_obj)))
-  has_control   <- any(grepl(paste0(control,   "_", CellType), colnames(counts_obj)))
+  # Pseudobulk columns of this block: "<assay>.<label>_<CellType>_<replicate>".
+  # Match the WHOLE name -- an unanchored "<label>_<CellType>" also matched
+  # cell types whose name starts with this one ("Sst" picked up "Sst.Chodl",
+  # "L6.IT" picked up "L6.IT.Car3"), mixing their samples into the block.
+  # Seurat may prefix the first group.by value with "g" (e.g. "g3xTg").
+  .re_esc  <- function(x) gsub("([][{}()+*^$|\\\\?.])", "\\\\\\1", x)
+  trt_pat  <- paste0("(^|\\.)g?", .re_esc(paste0(treatment, "_", CellType)), "_[^_]+$")
+  ctrl_pat <- paste0("(^|\\.)g?", .re_esc(paste0(control,   "_", CellType)), "_[^_]+$")
+
+  has_treatment <- any(grepl(trt_pat,  colnames(counts_obj)))
+  has_control   <- any(grepl(ctrl_pat, colnames(counts_obj)))
 
   if (!has_treatment) {
     stop("No column matching '", treatment, "_", CellType, "' found in counts_polyA.")
@@ -2394,8 +3329,8 @@ DEPsMatrix <- function(
   }
 
   if (!is.null(covariate_formula)) {
-    trt_orig_cols  <- grep(paste0(treatment, "_", CellType), colnames(counts_obj), value = TRUE)
-    ctrl_orig_cols <- grep(paste0(control,   "_", CellType), colnames(counts_obj), value = TRUE)
+    trt_orig_cols  <- grep(trt_pat,  colnames(counts_obj), value = TRUE)
+    ctrl_orig_cols <- grep(ctrl_pat, colnames(counts_obj), value = TRUE)
 
     # Strip assay prefix (e.g. "polyA.") before extracting the sample token
     trt_orig_cols_clean  <- sub("^polyA\\.", "", trt_orig_cols)
@@ -2411,14 +3346,20 @@ DEPsMatrix <- function(
     stopifnot(!anyNA(trt_covariates), !anyNA(ctrl_covariates))
   }
 
+  # Original pseudobulk column names, in the same order rename_with() numbers
+  # them below (polyA_treatment_1.., polyA_control_1..) -- used to return the
+  # block's counts with real sample names (DEPsMatrix(return_filter = TRUE)).
+  trt_cols_orig  <- grep(trt_pat,  colnames(counts_obj), value = TRUE)
+  ctrl_cols_orig <- grep(ctrl_pat, colnames(counts_obj), value = TRUE)
+
   counts_polyA <- counts_obj %>%
     dplyr::rename_with(
       ~ paste0("polyA_treatment_", seq_along(.x)),
-      dplyr::matches(paste0(treatment, "_", CellType))
+      dplyr::matches(trt_pat, ignore.case = FALSE)
     ) %>%
     dplyr::rename_with(
       ~ paste0("polyA_control_", seq_along(.x)),
-      dplyr::matches(paste0(control, "_", CellType))
+      dplyr::matches(ctrl_pat, ignore.case = FALSE)
     ) %>%
     dplyr::mutate(peak = rownames(.))
 
@@ -2439,24 +3380,42 @@ DEPsMatrix <- function(
   count_cols <- grep("^polyA_treatment_|^polyA_control_", colnames(PolyA_DEP), value = TRUE)
   count_mat  <- as.matrix(PolyA_DEP[, count_cols])
 
-  # Filter
-  if (filter_method == "edgeR") {
-    group <- dplyr::case_when(
-      grepl("^polyA_treatment_", count_cols) ~ "treatment",
-      grepl("^polyA_control_",   count_cols) ~ "control"
-    )
-    keep <- edgeR::filterByExpr(count_mat, group = group)
-
-  } else if (filter_method == "manual") {
-    keep <- rowSums(count_mat) >= mincounts
-
-  } else {
-    stop("filter_method must be 'edgeR' or 'manual'")
-  }
+  # Filter -- same helper as DEGsMatrix()/PseudobulkFilter()
+  group <- dplyr::case_when(
+    grepl("^polyA_treatment_", count_cols) ~ "treatment",
+    grepl("^polyA_control_",   count_cols) ~ "control"
+  )
+  keep <- .FilterFeatures(count_mat, group,
+                          filter_method     = filter_method,
+                          mincounts         = mincounts,
+                          filterByExpr_args = filterByExpr_args)
 
   if (verbose) message(sprintf("Keeping %d / %d peaks after '%s' filtering", sum(keep), nrow(count_mat), filter_method))
 
   PolyA_DEP <- PolyA_DEP[keep, ]
+
+  # Record the block's filter outcome on every returned object (read by
+  # DEPsMatrix(return_filter = TRUE)).
+  filter_info <- list(n_peaks = nrow(count_mat), n_kept = sum(keep),
+                      kept = rownames(PolyA_DEP))
+  if (isTRUE(keep_counts)) {
+    # The block's counts BEFORE the filter (rows = the peaks the filter saw),
+    # with the real pseudobulk sample names, for QCDensity().
+    orig_of <- c(
+      stats::setNames(trt_cols_orig,  paste0("polyA_treatment_", seq_along(trt_cols_orig))),
+      stats::setNames(ctrl_cols_orig, paste0("polyA_control_",   seq_along(ctrl_cols_orig)))
+    )
+    cm <- count_mat
+    cm[is.na(cm)] <- 0
+    colnames(cm) <- unname(orig_of[colnames(count_mat)])
+    filter_info$counts  <- Matrix::Matrix(cm, sparse = TRUE)
+    filter_info$samples <- data.frame(
+      sample_id = colnames(cm),
+      label     = ifelse(grepl("^polyA_treatment_", colnames(count_mat)), treatment, control),
+      stringsAsFactors = FALSE
+    )
+  }
+  .with_filter <- function(x) { attr(x, "red_filter") <- filter_info; x }
 
   # Drop peaks with no usable gene id BEFORE splitting. split() would otherwise
   # create a group named "" (or drop NA rows), and R's `[[` never matches an
@@ -2472,7 +3431,7 @@ DEPsMatrix <- function(
                     n_pre_gene - nrow(PolyA_DEP)))
   }
   if (nrow(PolyA_DEP) == 0) {
-    return(tibble::tibble())
+    return(.with_filter(tibble::tibble()))
   }
 
   # Split by ensembl_gene_id rather than gene symbol: symbols can be
@@ -2536,6 +3495,7 @@ DEPsMatrix <- function(
         RED_Direction     = NA_character_,
         RED_fisher_pval   = NA_real_,
         RED_fisher_padj   = NA_real_,
+        RED_ttest_pval    = NA_real_,
         RED_LRT_pval      = NA_real_,
         RED_LRT_cov_pval  = NA_real_,
         PASTA_pval        = NA_real_,
@@ -2752,23 +3712,70 @@ DEPsMatrix <- function(
     pairwise_comparisons <- pairwise_comparisons %>%
       dplyr::mutate( RED_type = dplyr::if_else( p_region == "Intron", "REDi", "REDu") )
 
-    pairwise_comparisons <- pairwise_comparisons %>%
-      dplyr::group_by(Ensembl_ID, RED_type) %>%
-      dplyr::slice_max(p_percent_change + d_percent_change, n = 1, with_ties = FALSE) %>%
-      dplyr::ungroup()
+    # Pooled (treatment + control) reads per site: label-free site usage, used
+    # by pair_rule = "top" and by the quantifiability columns below.
+    site_use <- rowSums(as.matrix(gene_processed[, c(trt_count_cols_g, ctrl_count_cols_g),
+                                                 drop = FALSE]), na.rm = TRUE)
+
+    if (pair_rule == "max") {
+      # One pair per RED type: the one with the largest combined change in
+      # proportion between treatment and control (original behaviour).
+      pairwise_comparisons <- pairwise_comparisons %>%
+        dplyr::group_by(Ensembl_ID, RED_type) %>%
+        dplyr::slice_max(p_percent_change + d_percent_change, n = 1, with_ties = FALSE) %>%
+        dplyr::ungroup()
+    } else {
+      # "top": the most-used sites, chosen from pooled treatment + control
+      # reads (independent of the treatment-vs-control difference).
+      #   REDu: the two most-used 3'-most-exon sites (ordered 5' -> 3').
+      #   REDi: the most-used intronic site + the most-used 3'-most-exon site
+      #         downstream of it.
+      loc <- gene_processed$Intron.exon.location
+      ex  <- which(loc == "3' most exon" & site_use > 0)
+      it  <- which(loc == "Intron"       & site_use > 0)
+      top_pairs <- list()
+      if (length(ex) >= 2) {
+        u <- sort(ex[order(-site_use[ex])][1:2])
+        top_pairs$u <- data.frame(p_site_id = gene_processed$site_id[u[1]],
+                                  d_site_id = gene_processed$site_id[u[2]])
+      }
+      if (length(it) >= 1) {
+        pi_ <- it[which.max(site_use[it])]
+        dc  <- ex[ex > pi_]
+        if (length(dc) >= 1) {
+          top_pairs$i <- data.frame(p_site_id = gene_processed$site_id[pi_],
+                                    d_site_id = gene_processed$site_id[dc[which.max(site_use[dc])]])
+        }
+      }
+      if (length(top_pairs) == 0) return(NULL)
+      pairwise_comparisons <- pairwise_comparisons %>%
+        dplyr::semi_join(dplyr::bind_rows(top_pairs), by = c("p_site_id", "d_site_id"))
+      if (nrow(pairwise_comparisons) == 0) return(NULL)
+    }
 
     pairwise_comparisons <- pairwise_comparisons %>%
       dplyr::mutate( RED = log2(d_treatment_prop/p_treatment_prop) - log2(d_control_prop/p_control_prop),
                      RED = ifelse(is.finite(RED), RED, NA_real_))
 
+    # Only the requested tests; Fisher and t-test come from ONE
+    # compute_statistics() call per pair (it computes both).
+    n_pairs <- nrow(pairwise_comparisons)
+    st <- if (any(c("fisher", "ttest") %in% red_tests)) {
+      lapply(seq_len(n_pairs), function(i)
+        compute_statistics(pairwise_comparisons$p_site_id[i],
+                           pairwise_comparisons$d_site_id[i], gene_processed))
+    } else NULL
     pairwise_comparisons <- pairwise_comparisons %>%
       dplyr::mutate(
-        RED_fisher_pval = sapply(seq_len(nrow(pairwise_comparisons)), function(i) {
-          compute_statistics(p_site_id[i], d_site_id[i], gene_processed )$fisher_pval }),
-        RED_ttest_pval = sapply(seq_len(nrow(pairwise_comparisons)), function(i) {
-          compute_statistics(p_site_id[i], d_site_id[i], gene_processed )$ttest_pval }),
-        RED_LRT_pval = sapply(seq_len(nrow(pairwise_comparisons)), function(i) {
-          compute_statistics_LRT(p_site_id[i], d_site_id[i], gene_processed )$lrt_pval }),
+        RED_fisher_pval = if ("fisher" %in% red_tests)
+          vapply(st, function(x) x$fisher_pval, numeric(1)) else NA_real_,
+        RED_ttest_pval  = if ("ttest" %in% red_tests)
+          vapply(st, function(x) x$ttest_pval, numeric(1)) else NA_real_,
+        RED_LRT_pval = if ("LRT" %in% red_tests) {
+          vapply(seq_len(n_pairs), function(i) {
+            compute_statistics_LRT(p_site_id[i], d_site_id[i], gene_processed)$lrt_pval
+          }, numeric(1))
+        } else NA_real_,
         RED_LRT_cov_pval = if (!is.null(covariate_formula)) {
           sapply(seq_len(nrow(pairwise_comparisons)), function(i) {
             compute_statistics_LRT_cov(
@@ -2804,6 +3811,45 @@ DEPsMatrix <- function(
                        numeric(1))
       )
 
+    # --- Quantifiability of the pair ----------------------------------------
+    # (a) reads: mean reads per replicate of EACH site in EACH group
+    # (b) usage: each site's share of the gene's pooled (treatment + control)
+    #     reads over the retained sites -- label-free
+    # (c) replicate separation: every treatment replicate against every
+    #     control replicate (e.g. 4 x 4 = 16 match-ups); fraction of match-ups
+    #     where the treated log2(d/p) lies in the direction of RED. 1 = complete
+    #     separation; one or two atypical replicates lower it.
+    cm_trt  <- as.matrix(gene_processed[, trt_count_cols_g,  drop = FALSE])
+    cm_ctrl <- as.matrix(gene_processed[, ctrl_count_cols_g, drop = FALSE])
+    gene_tot <- sum(site_use)
+    lr <- function(d, p) log2((d + 0.5) / (p + 0.5))
+    q <- lapply(seq_len(nrow(pairwise_comparisons)), function(i) {
+      pr <- which(gene_processed$site_id == pairwise_comparisons$p_site_id[i])
+      dr <- which(gene_processed$site_id == pairwise_comparisons$d_site_id[i])
+      red_i <- pairwise_comparisons$RED[i]
+      trt_lr  <- lr(cm_trt[dr, ],  cm_trt[pr, ])
+      ctrl_lr <- lr(cm_ctrl[dr, ], cm_ctrl[pr, ])
+      sep <- if (is.na(red_i) || red_i == 0) NA_real_ else
+        mean(sign(outer(trt_lr, ctrl_lr, "-")) == sign(red_i))
+      data.frame(
+        p_reads_treatment = mean(cm_trt[pr, ],  na.rm = TRUE),
+        p_reads_control   = mean(cm_ctrl[pr, ], na.rm = TRUE),
+        d_reads_treatment = mean(cm_trt[dr, ],  na.rm = TRUE),
+        d_reads_control   = mean(cm_ctrl[dr, ], na.rm = TRUE),
+        p_usage           = if (gene_tot > 0) site_use[pr] / gene_tot else NA_real_,
+        d_usage           = if (gene_tot > 0) site_use[dr] / gene_tot else NA_real_,
+        rep_pairs_frac    = round(sep, 3)
+      )
+    })
+    pairwise_comparisons <- dplyr::bind_cols(pairwise_comparisons, dplyr::bind_rows(q)) %>%
+      dplyr::mutate(
+        ok_reads      = (pmin(p_reads_treatment, p_reads_control,
+                              d_reads_treatment, d_reads_control) >= min_site_reads) %in% TRUE,
+        ok_usage      = (pmin(p_usage, d_usage) >= min_site_usage) %in% TRUE,
+        ok_replicates = (rep_pairs_frac >= min_rep_pairs) %in% TRUE,
+        quantifiable  = ok_reads & ok_usage & ok_replicates
+      )
+
     return(pairwise_comparisons)
   })
 
@@ -2813,7 +3859,7 @@ DEPsMatrix <- function(
   if (length(Matrix) == 0) {
     warning("No valid gene-level results for CellType = '", CellType,
             "'. This CellType may have too few peaks/samples after filtering. Returning empty tibble.")
-    return(tibble::tibble())
+    return(.with_filter(tibble::tibble()))
   }
 
   Matrix <- Matrix %>%
@@ -2824,6 +3870,7 @@ DEPsMatrix <- function(
     dplyr::group_by(RED_type) %>%
     dplyr::mutate(
       RED_fisher_padj    = p.adjust(RED_fisher_pval,     method = "BH"),
+      RED_ttest_padj     = p.adjust(RED_ttest_pval,      method = "BH"),
       RED_LRT_padj       = p.adjust(RED_LRT_pval,         method = "BH"),
       RED_LRT_cov_padj   = p.adjust(RED_LRT_cov_pval,     method = "BH"),  # <-- add
       PASTA_padj         = p.adjust(PASTA_pval,           method = "BH"),
@@ -2845,9 +3892,16 @@ DEPsMatrix <- function(
       RED, RED_Direction,
       DPAU, gDPAU,
       RED_LRT_pval,     RED_LRT_padj,
+      RED_fisher_pval,  RED_fisher_padj,
+      RED_ttest_pval,   RED_ttest_padj,
       RED_LRT_cov_pval, RED_LRT_cov_padj,
       PASTA_pval,       PASTA_padj,
       Condition,
+      dplyr::any_of(c("quantifiable", "ok_reads", "ok_usage", "ok_replicates",
+                      "rep_pairs_frac",
+                      "p_reads_control", "p_reads_treatment",
+                      "d_reads_control", "d_reads_treatment",
+                      "p_usage", "d_usage")),
       p_site_id, d_site_id,
       p_peak, d_peak,
       p_pos, d_pos,
@@ -2868,7 +3922,7 @@ DEPsMatrix <- function(
       #dplyr::all_of(d_nread_ctrl_cols)
     )
 
-  return(Matrix)
+  return(.with_filter(Matrix))
 }
 
 
@@ -2990,19 +4044,21 @@ compute_statistics_LRT_cov <- function(p_idx, d_idx, gene_processed,
       full_f <- stats::as.formula(paste("cbind(d_count, p_count) ~ condition +", covariate_formula))
       null_f <- stats::as.formula(paste("cbind(d_count, p_count) ~",            covariate_formula))
 
-      fit_full <- stats::glm(full_f, data = df, family = stats::binomial())
-      fit_null <- stats::glm(null_f, data = df, family = stats::binomial())
+      # glm warnings (e.g. "fitted probabilities numerically 0 or 1", typical
+      # of very strong usage changes) are muffled instead of turning the
+      # p-value into NA -- that silently dropped some of the strongest events.
+      fit_full <- suppressWarnings(stats::glm(full_f, data = df, family = stats::binomial()))
+      fit_null <- suppressWarnings(stats::glm(null_f, data = df, family = stats::binomial()))
 
       if (!fit_full$converged || !fit_null$converged) {
         NA_real_
       } else {
-        lrt <- stats::anova(fit_null, fit_full, test = "LRT")
+        lrt <- suppressWarnings(stats::anova(fit_null, fit_full, test = "LRT"))
         lrt[["Pr(>Chi)"]][2]
       }
     }
   },
-  error   = function(e) NA_real_,
-  warning = function(w) NA_real_
+  error   = function(e) NA_real_
   )
 
   return(list(lrt_pval = lrt_pval))
@@ -3031,7 +4087,9 @@ compute_statistics_LRT_cov <- function(p_idx, d_idx, gene_processed,
 #'     \item{\code{lrt_pval}}{P-value from the likelihood ratio test comparing
 #'       a binomial GLM with condition as a predictor against the null model.
 #'       Returns \code{NA_real_} if there are fewer than 2 usable replicates
-#'       total, if all counts are zero, or if model fitting errors/warns}
+#'       total, if all counts are zero, or if model fitting errors. Fitting
+#'       warnings (e.g. fitted probabilities 0/1 for very strong changes) are
+#'       muffled and the p-value is kept}
 #'   }
 #'
 #' @keywords internal
@@ -3061,23 +4119,25 @@ compute_statistics_LRT <- function(p_idx, d_idx, gene_processed) {
     if (nrow(df) < 2 || length(unique(df$condition)) < 2) {
       NA_real_
     } else {
-      fit_full <- stats::glm(
+      # glm warnings (e.g. "fitted probabilities numerically 0 or 1", typical
+      # of very strong usage changes) are muffled instead of turning the
+      # p-value into NA -- that silently dropped some of the strongest events.
+      fit_full <- suppressWarnings(stats::glm(
         cbind(d_count, p_count) ~ condition,
         data   = df,
         family = stats::binomial()
-      )
-      fit_null <- stats::glm(
+      ))
+      fit_null <- suppressWarnings(stats::glm(
         cbind(d_count, p_count) ~ 1,
         data   = df,
         family = stats::binomial()
-      )
+      ))
 
-      lrt <- stats::anova(fit_null, fit_full, test = "LRT")
+      lrt <- suppressWarnings(stats::anova(fit_null, fit_full, test = "LRT"))
       lrt[["Pr(>Chi)"]][2]
     }
   },
-  error   = function(e) NA_real_,
-  warning = function(w) NA_real_
+  error   = function(e) NA_real_
   )
 
   return(list(

@@ -4,27 +4,78 @@
 \alias{FilterPeaks}
 \title{Filter and Standardize Genomic Peaks Across Samples}
 \usage{
-FilterPeaks(polyA.assays, multiple_samples = NULL)
+FilterPeaks(
+  polyA.assays,
+  multiple_samples = NULL,
+  polyAdb.file = NULL,
+  polyAdb = NULL,
+  biotypes = NULL,
+  biotype_col = "gene_biotype",
+  location_col = "Intron.exon.location",
+  max.dist = 50,
+  plot = TRUE,
+  verbose = TRUE
+)
 }
 \arguments{
 \item{polyA.assays}{A list or collection of assay objects containing genomic ranges.
 Each element should be compatible with \code{GenomicRanges::granges()}.}
 
 \item{multiple_samples}{set TRUE if multiple studies are analyzed together.}
+
+\item{polyAdb.file}{Path to the polyA_DB table (e.g. \code{"polyAdb_mm10.txt"},
+the same file given to \code{PASTA::GetPolyADbAnnotation()}). Needed when
+\code{biotypes} is set, unless \code{polyAdb} is given. When given (even
+without \code{biotypes}), every peak is annotated with biotype and
+location (\code{PeakMeta}, \code{SampleSummary}).}
+
+\item{polyAdb}{The polyA_DB table already read into R (alternative to
+\code{polyAdb.file}). Must have \code{hg38_Chromosome_format},
+\code{hg38_Position}, \code{Strand} and \code{biotype_col}.}
+
+\item{biotypes}{Character vector of gene biotypes to keep (values of
+\code{biotype_col}), e.g. \code{"protein_coding"} or
+\code{c("protein_coding", "lncRNA")}. \code{NULL} (default) = no filter.}
+
+\item{biotype_col}{Column of the polyA_DB table holding the biotype. Default
+\code{"gene_biotype"}.}
+
+\item{location_col}{Column of the polyA_DB table holding the genomic location
+of the site. Default \code{"Intron.exon.location"}.}
+
+\item{max.dist}{Maximum distance (nt) between a peak's 3' end and its
+polyA_DB site. Default \code{50}, as in \code{PASTA::GetPolyADbAnnotation()};
+use the same value there.}
+
+\item{plot}{Logical. Print the diagnostic plots. Default \code{TRUE}.}
+
+\item{verbose}{Logical. Print the biotype-filter summary. Default \code{TRUE}.}
 }
 \value{
-A list with two elements:
+A list with:
   \describe{
     \item{Ranges}{A \code{GRanges} object containing the unified peak set after
-      reducing overlaps across all samples (strand-aware).}
+      reducing overlaps across all samples (strand-aware); only the kept peaks
+      when \code{biotypes} is set.}
     \item{CommonPeaks}{An integer vector indicating the number of samples that
-      overlap with each peak in the unified set.}
+      overlap with each peak in \code{Ranges}.}
+    \item{PeakMeta}{When a polyA_DB is given: one row per unified peak,
+      ALL of them (before filtering): \code{peak}, \code{n_samples},
+      \code{distance} to the nearest polyA_DB site, \code{biotype},
+      \code{location}, \code{kept}. \code{NULL} otherwise.}
+    \item{SampleSummary}{Peaks per sample. With a polyA_DB: counts per
+      \code{sample} x \code{location} x \code{biotype} x \code{kept} (each
+      original peak inherits the annotation of its unified peak); without:
+      \code{sample}, \code{n}.}
+    \item{Audit}{Same as \code{PeakMeta} (kept for compatibility).}
   }
 }
 \description{
 This function standardizes peaks across all samples by creating a unified peak set,
-reducing overlaps, and counting sample representation. It also generates visualization
-plots showing peak distribution across samples.
+reducing overlaps, and counting sample representation. Optionally keeps only
+peaks whose polyA_DB site belongs to given gene biotypes (e.g.
+\code{"protein_coding"}). It also generates visualization plots showing peak
+distribution across samples.
 }
 \details{
 The function performs the following steps:
@@ -32,17 +83,25 @@ The function performs the following steps:
   \item Extracts all GRanges from individual assays
   \item Creates a unified peak set by reducing overlapping ranges (strand-aware)
   \item Counts how many samples each peak appears in
+  \item Optionally filters by gene biotype (see below)
   \item Generates two diagnostic plots:
     \itemize{
       \item Number of peaks per sample (bar plot)
       \item Distribution of peaks by number of samples (bar plot)
     }
 }
+
+Annotation and biotype filter: each unified peak is matched to polyA_DB with
+the same rule as \code{\link{AnnotatePolyADb}()} -- the peak's 3' end, the
+nearest polyA_DB site on the same strand within \code{max.dist}, and a fixed
+choice when several polyA_DB rows are equally near. Annotate the Seurat
+object with \code{AnnotatePolyADb()} (same file and \code{max.dist}) and
+every peak gets the same annotation in both. Peaks without a polyA_DB site
+within \code{max.dist} have no biotype and are removed by the filter.
 }
 \note{
 The function prints combined plots to the current graphics device.
   Requires the \code{patchwork} package for plot combination (using \code{|} operator).
-  A theme object \code{th} must be defined in the global environment.
 }
 \examples{
 \dontrun{
@@ -50,6 +109,12 @@ The function prints combined plots to the current graphics device.
 results <- FilterPeaks(my_polyA_assays)
 unified_peaks <- results$Ranges
 sample_counts <- results$CommonPeaks
+
+# Only peaks at protein-coding polyA_DB sites
+results_pc <- FilterPeaks(my_polyA_assays, multiple_samples = TRUE,
+                          polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
+                          biotypes = "protein_coding", max.dist = 50)
+table(results_pc$Audit$biotype, useNA = "ifany")
 }
 
 }

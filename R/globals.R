@@ -8,8 +8,19 @@ utils::globalVariables(c(
   "RED_LRT_pval", "RED_LRT_padj",
   "RED_LRT_cov_pval", "RED_LRT_cov_padj",
   "gDPAU", "DPAU",
+  # RED pair-type assignment (R/3_PolyAAnalysis.R)
+  "RED_type", "p_region", "d_region",
   # ClusterPlots elbow/variance plots (R/2_ScePlots.R)
   "PC", "Stdev", "CumulativeStdev", "color",
   # plot_annotation_from_granges gene track (R/3_PolyAAnalysis.R)
-  "has_cds", "block_h"
+  "has_cds", "block_h",
+  # RED quantifiability columns (R/3_PolyAAnalysis.R)
+  "p_reads_treatment", "p_reads_control", "d_reads_treatment", "d_reads_control",
+  "p_usage", "d_usage", "rep_pairs_frac",
+  "ok_reads", "ok_usage", "ok_replicates", "quantifiable",
+  # ClusterComposition / FlagContaminants (R/6_Clustering.R)
+  "cluster", "celltype", "n", "expected", "contaminant", "contaminants",
+  "cells", "kept_prot",
+  # FilterPeaks per-sample summary (R/3_PolyAAnalysis.R)
+  "location", "biotype", "kept"
 ))

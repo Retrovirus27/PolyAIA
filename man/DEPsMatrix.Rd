@@ -19,10 +19,12 @@ DEPsMatrix(
   background_sep = "",
   min.counts.background = 5,
   Pasta = TRUE,
+  modified_residuals = FALSE,
   de_features = NULL,
   min_cells = 10,
-  filter_method = "edgeR",
+  filter_method = c("edgeR", "manual", "none"),
   mincounts = 10,
+  filterByExpr_args = list(),
   gdpau_min_reads = 5,
   covariates = NULL,
   sample_metadata = NULL,
@@ -36,6 +38,19 @@ DEPsMatrix(
   rmsk = NULL,
   repeat_masker_positions = "Intron",
   drop_na_cols = TRUE,
+  pair_rule = c("max", "top"),
+  red_tests = c("LRT", "fisher", "ttest"),
+  parallel = FALSE,
+  ncores = NULL,
+  BPPARAM = NULL,
+  exclude_peaks = FALSE,
+  peak_audit = NULL,
+  phantom_min_counts = 50,
+  phantom_max_ratio = 0.1,
+  min_site_reads = 10,
+  min_site_usage = 0.05,
+  min_rep_pairs = 0.9,
+  return_filter = FALSE,
   return_seurat = FALSE,
   verbose = TRUE
 )
@@ -96,6 +111,13 @@ step. If \code{NULL}, the object's current \code{Idents} are used as-is.}
 differential testing; if \code{FALSE}, skip both and compute RED from
 counts only (PASTA stat columns are \code{NA}).}
 
+\item{modified_residuals}{Logical. Which residual implementation to use when
+\code{Pasta = TRUE}. \code{FALSE} (default) uses the canonical
+\code{PASTA::CalcPolyAResiduals()}; \code{TRUE} uses this package's
+modified \code{\link{CalcPolyAResidualsPolyA}}. Both write the residuals
+to the polyA assay's \code{"scale.data"} layer, so the rest of the
+pipeline is identical. Ignored when \code{Pasta = FALSE}.}
+
 \item{de_features}{Optional features passed to \code{DEPolyAPeaks()} for the
 differential test. Default \code{NULL} = test every peak that has a
 residual. Do NOT set this to \code{features}: residual calculation drops
@@ -113,8 +135,17 @@ lacks the required pseudobulk columns for a given comparison (e.g. no cells
 in one condition) is skipped for that comparison with a warning rather than
 erroring. Default 10.}
 
-\item{filter_method, mincounts}{Passed to the RED core. Default
-\code{"edgeR"}, 10.}
+\item{filter_method}{Peak filter applied in each cell type x comparison
+block before pairing (same options as \code{DEGsMatrix()}).
+\code{"edgeR"} (default): \code{edgeR::filterByExpr()} with the block's
+treatment/control design; \code{"manual"}: keep peaks with
+\code{rowSums(counts) >= mincounts}; \code{"none"}: keep all peaks.}
+
+\item{mincounts}{Threshold for \code{filter_method = "manual"}. Default 10.}
+
+\item{filterByExpr_args}{Named list of extra arguments for
+\code{edgeR::filterByExpr()} (e.g. \code{list(min.count = 5)}).
+Default \code{list()}.}
 
 \item{gdpau_min_reads}{Minimum total supporting reads a group must have (for
 the gene, for gDPAU; for the site pair, for DPAU) to compute the index
@@ -166,6 +197,61 @@ columns are \code{NA} by construction, and \code{RED_LRT_cov_*} is
 \code{NA} without a \code{covariate_formula}. Default \code{TRUE}; set
 \code{FALSE} to keep a fixed column layout.}
 
+\item{pair_rule}{How the proximal/distal pair of each gene is chosen, per
+RED type. \code{"max"} (default): the pair with the largest combined
+change in proportion between treatment and control. \code{"top"}: the
+most-used sites from pooled treatment + control reads of the comparison
+(REDu: the two most-used 3'-most-exon sites; REDi: the most-used intronic
+site and the most-used 3'-most-exon site downstream of it), which does not
+depend on the treatment-vs-control difference.}
+
+\item{red_tests}{Tests of the proximal/distal usage change reported per
+pair, any of \code{"LRT"} (binomial GLM likelihood-ratio test on
+per-replicate counts), \code{"fisher"} (Fisher's exact test on pooled
+counts) and \code{"ttest"} (t-test on per-replicate log2(d/p)). Each adds
+\code{RED_<test>_pval} / \code{RED_<test>_padj} (BH per cell type x
+comparison x RED type). Default all three; fewer = faster.}
+
+\item{parallel}{Logical. Compute the (cell type x comparison) blocks in
+parallel (BiocParallel; forking on macOS/Linux). Default \code{FALSE}
+(sequential). Results are identical either way.}
+
+\item{ncores}{Number of workers when \code{parallel = TRUE}. \code{NULL}
+(default) = all cores but one.}
+
+\item{BPPARAM}{Optional BiocParallel back-end (overrides
+\code{parallel}/\code{ncores}), e.g. \code{BiocParallel::MulticoreParam(8)}.}
+
+\item{exclude_peaks}{Logical. Remove "phantom" peaks (counts in the matrix
+but no reads in their window of the fragment files; see
+\code{PeakAudit()}) before pairing. Default \code{FALSE}.}
+
+\item{peak_audit}{Optional output of \code{PeakAudit()} to reuse. If
+\code{NULL} and \code{exclude_peaks = TRUE}, it is computed (slow).}
+
+\item{phantom_min_counts, phantom_max_ratio}{Passed to \code{PeakAudit()}
+when it is computed here. Defaults \code{50} and \code{0.1}.}
+
+\item{min_site_reads}{Minimum mean reads per replicate of EACH site of the
+pair in EACH group for \code{ok_reads}. Default \code{10}.}
+
+\item{min_site_usage}{Minimum share of the gene's pooled reads of each site
+of the pair for \code{ok_usage}. Default \code{0.05}.}
+
+\item{min_rep_pairs}{Minimum \code{rep_pairs_frac} for \code{ok_replicates}.
+Default \code{0.9}.}
+
+\item{return_filter}{Logical. Also return \code{$filter}, with the same
+structure as \code{PseudobulkFilter()} so it can be passed to
+\code{QCDensity()}: the pseudobulk counts each (cell type x comparison)
+block filtered (\code{$pseudobulk}, \code{$sample_meta} with
+\code{replicate} and \code{n_cells} per pseudobulk sample), the peaks
+entering DEPsMatrix before PASTA (\code{$input}), the peaks each block saw
+after PASTA (\code{$tested}) and kept after the expression filter
+(\code{$kept}), and \code{$summary} (peaks in / kept, status). Plot the
+three stages with \code{QCDensity(stage = "input" / "before" / "after")}.
+Default \code{FALSE}.}
+
 \item{return_seurat}{Logical. The result is always a list with
 \code{$red_scores} and \code{$polyAdb} (see \strong{Value}). If
 \code{TRUE}, the list additionally includes \code{$seu} -- the
@@ -187,12 +273,27 @@ A combined \code{data.frame} of RED scores across all cell types and
   gene's sites; equals DPAU when \eqn{n=2}). A group with fewer than
   \code{gdpau_min_reads} supporting reads gives \code{NA}.
 
+  Quantifiability of each pair: \code{p_/d_reads_control},
+  \code{p_/d_reads_treatment} (mean reads per replicate), \code{p_/d_usage}
+  (share of the gene's pooled reads), \code{rep_pairs_frac} (fraction of
+  treatment-vs-control replicate match-ups, e.g. 4 x 4 = 16, in which the
+  treated \eqn{\log_2(d/p)} lies in the direction of RED; 1 = complete
+  separation), the flags \code{ok_reads}, \code{ok_usage},
+  \code{ok_replicates}, and \code{quantifiable} (all three \code{TRUE}).
+
   Always returns a \strong{list}: \code{$red_scores} (the RED table above,
-  suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb} (the
-  analyzed peak-level table -- one row per peak, TE handling applied, with a
-  \code{Repeated_Masker} flag -- suitable as \code{PolyAPlot()}'s
-  \code{polyAdb}). With \code{return_seurat = TRUE} the list also has
-  \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object.
+  suitable as \code{PolyAPlot()}'s \code{deg_list}) and \code{$polyAdb}
+  (the analyzed sites, TE handling applied, with a \code{Repeated_Masker}
+  flag -- suitable as \code{PolyAPlot()}'s \code{polyAdb}). With
+  \code{Pasta = TRUE}, \code{$polyAdb} holds the full PASTA results: one row
+  per peak x cell type (\code{CellType}) x comparison (\code{Condition}) with
+  the \code{DEPolyAPeaks()} statistics (\code{Estimate}, \code{p.value},
+  \code{p_val_adj}, \code{percent.1}, \code{percent.2}) plus the peak/gene
+  annotation. With \code{Pasta = FALSE}, it is the plain peak-level table,
+  one row per peak. With \code{return_seurat = TRUE} the list also has
+  \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object;
+  with \code{exclude_peaks = TRUE}, \code{$peak_audit}; with
+  \code{return_filter = TRUE}, \code{$filter}.
 }
 \description{
 Integrated pipeline that takes an annotated Seurat object (with a polyA

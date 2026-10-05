@@ -117,8 +117,14 @@ CalcPolyAResidualsPolyA <- function(object,
   }
 
   ncells = dim(object)[2]
-  background.cells <- Seurat::WhichCells(object, idents=background)
-  m.background <- as.matrix(m[,background.cells], nrow = nrow(m))
+  # Use `background.use`, NOT `background`: when the caller passes
+  # background = NULL we create a dummy "all" ident above and set
+  # background.use <- "all". Passing the raw NULL here would ask WhichCells()
+  # for idents = NULL, silently returning every cell instead of the intended
+  # background group -- and, more importantly, it would disagree with the
+  # background.dist computed from `background.use` a few lines up.
+  background.cells <- Seurat::WhichCells(object, idents = background.use)
+  m.background <- as.matrix(m[, background.cells, drop = FALSE], nrow = nrow(m))
 
   #fit dirichlet multinomial for each gene
   res <- lapply(genes, DirichletMultinomial, background.dist=background.dist,

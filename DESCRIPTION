@@ -38,6 +38,7 @@ Imports:
     utils,
     magrittr,
     BiocParallel,
+    parallel,
     colorspace,
     viridisLite,
     scDblFinder,
@@ -70,4 +71,9 @@ Imports:
     SingleR,
     edgeR
 Suggests:
-    SoupX
+    SoupX,
+    clustree,
+    ggraph,
+    Libra
+Remotes:
+    neurorestore/Libra

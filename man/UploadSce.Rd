@@ -12,7 +12,7 @@ UploadSce(
   species = c("human", "mouse"),
   reference = c("humancortexref", "mousecortexref"),
   genome_build = c("hg38", "hg19", "mm10", "mm39"),
-  IDtype = c("SYMBOL", "ENTREZID", "ENSEMBL"),
+  IDtype = c("ENSEMBL", "SYMBOL", "ENTREZID"),
   columns = c("SYMBOL", "GENETYPE", "ENTREZID", "ENZYME", "ENSEMBL"),
   include_ranges = TRUE,
   remove_doublets = TRUE,
@@ -39,8 +39,10 @@ Options: \code{"humancortexref"} or \code{"mousecortexref"}}
 \item{genome_build}{Genome build to use for annotation.
 Options: \code{"hg38"}, \code{"hg19"}, \code{"mm10"}, or \code{"mm39"}}
 
-\item{IDtype}{Gene identifier type for annotation.
-Options: \code{"SYMBOL"}, \code{"ENTREZID"}, or \code{"ENSEMBL"}}
+\item{IDtype}{Gene identifier type of the feature names (rownames).
+\code{DropletUtils::read10xCounts()} names features by Ensembl ID, so the
+default is \code{"ENSEMBL"}. Options: \code{"ENSEMBL"}, \code{"SYMBOL"},
+or \code{"ENTREZID"}}
 
 \item{columns}{Columns to include in gene annotation.
 Options: \code{"SYMBOL"}, \code{"GENETYPE"}, \code{"ENTREZID"}, \code{"ENZYME"}, \code{"ENSEMBL"}}
@@ -51,9 +53,11 @@ Options: \code{"SYMBOL"}, \code{"GENETYPE"}, \code{"ENTREZID"}, \code{"ENZYME"},
 
 \item{apply_tags}{Logical. Whether to apply sample tags to barcodes. Default \code{TRUE}}
 
-\item{run_azimuth}{Logical. Whether to run Azimuth cell type annotation. If it fails,
-the pipeline continues without \code{Population}/\code{Subpopulation}/\code{CellType}
-columns rather than aborting. Default \code{TRUE}}
+\item{run_azimuth}{Logical. Whether to run Azimuth cell type annotation
+(adds \code{Population}, \code{Population_Score}, \code{Subpopulation},
+\code{Subpopulation_Score}). Broader groupings (e.g. a \code{CellType}
+column) are left to the user. If Azimuth fails, the pipeline continues
+without these columns rather than aborting. Default \code{TRUE}}
 
 \item{ncores}{Integer. Number of cores for parallel processing during doublet detection. Default \code{4}}
 

@@ -1,5 +1,3 @@
-library(dplyr)
-
 # Suppress specific, known-benign warnings (e.g. GenomicRanges Seqinfo merge
 # notices, BiocParallel multicore serialization notices) while still letting
 # any other, unexpected warning through. Used instead of blanket
@@ -27,16 +25,20 @@ library(dplyr)
 #' @param column_id Column ID for samples to match metadata. Ensure no spaces in values
 #' @param genome_build Genome build to use for annotation.
 #'   Options: \code{"hg38"}, \code{"hg19"}, \code{"mm10"}, or \code{"mm39"}
-#' @param IDtype Gene identifier type for annotation.
-#'   Options: \code{"SYMBOL"}, \code{"ENTREZID"}, or \code{"ENSEMBL"}
+#' @param IDtype Gene identifier type of the feature names (rownames).
+#'   \code{DropletUtils::read10xCounts()} names features by Ensembl ID, so the
+#'   default is \code{"ENSEMBL"}. Options: \code{"ENSEMBL"}, \code{"SYMBOL"},
+#'   or \code{"ENTREZID"}
 #' @param columns Columns to include in gene annotation.
 #'   Options: \code{"SYMBOL"}, \code{"GENETYPE"}, \code{"ENTREZID"}, \code{"ENZYME"}, \code{"ENSEMBL"}
 #' @param include_ranges Logical. Whether to include genomic ranges in the annotation. Default \code{TRUE}
 #' @param remove_doublets Logical. Whether to remove doublets using scDblFinder. Default \code{TRUE}
 #' @param apply_tags Logical. Whether to apply sample tags to barcodes. Default \code{TRUE}
-#' @param run_azimuth Logical. Whether to run Azimuth cell type annotation. If it fails,
-#'   the pipeline continues without \code{Population}/\code{Subpopulation}/\code{CellType}
-#'   columns rather than aborting. Default \code{TRUE}
+#' @param run_azimuth Logical. Whether to run Azimuth cell type annotation
+#'   (adds \code{Population}, \code{Population_Score}, \code{Subpopulation},
+#'   \code{Subpopulation_Score}). Broader groupings (e.g. a \code{CellType}
+#'   column) are left to the user. If Azimuth fails, the pipeline continues
+#'   without these columns rather than aborting. Default \code{TRUE}
 #' @param ncores Integer. Number of cores for parallel processing during doublet detection. Default \code{4}
 #' @param verbose Logical. Whether to print progress messages. Default \code{TRUE}
 #'
@@ -50,7 +52,7 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
                       species = c("human", "mouse"),
                       reference = c("humancortexref", "mousecortexref"),
                       genome_build = c("hg38", "hg19", "mm10", "mm39"),
-                      IDtype = c("SYMBOL", "ENTREZID", "ENSEMBL"),
+                      IDtype = c("ENSEMBL", "SYMBOL", "ENTREZID"),
                       columns = c("SYMBOL", "GENETYPE", "ENTREZID", "ENZYME", "ENSEMBL"),
                       include_ranges = TRUE,
                       remove_doublets = TRUE,
@@ -73,14 +75,10 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
     stop("species = 'mouse' requires reference = 'mousecortexref' (got '", reference, "').")
   }
 
-  # Check Azimuth
-  if (!requireNamespace("Azimuth", quietly = TRUE)) {
-    stop("Package 'Azimuth' is required. Install with: remotes::install_github('satijalab/azimuth')")
-  }
-
-  # Check Signac
-  if (!requireNamespace("Signac", quietly = TRUE)) {
-    stop("Package 'Signac' is required. Install with: BiocManager::install('Signac')")
+  # Check Azimuth (only needed when it is run)
+  if (isTRUE(run_azimuth) && !requireNamespace("Azimuth", quietly = TRUE)) {
+    stop("Package 'Azimuth' is required when run_azimuth = TRUE. ",
+         "Install with: remotes::install_github('satijalab/azimuth')")
   }
 
   # Validate inputs early with clear, actionable messages
@@ -96,7 +94,7 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
   if (length(file_names) == 0) {
     stop("No files matching pattern '", file_pattern, "' found in ", data_dir)
   }
-  all_files <- paste0(data_dir, "/", file_names)
+  all_files <- file.path(data_dir, file_names)
   names(all_files) <- gsub(file_pattern, "", file_names)
   sce <- DropletUtils::read10xCounts(all_files, sample.names = names(all_files), col.names = TRUE)
 
@@ -110,8 +108,17 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
   }
   rownames(meta_data) <- meta_data[[column_id]]
 
-  # Add annotations to sce
-  for (x in colnames(meta_data)) {SummarizedExperiment::colData(sce)[[x]] <- meta_data[[x]][match(SummarizedExperiment::colData(sce)$Sample, meta_data[[column_id]])] }
+  # Add annotations to sce (one match, reused for every metadata column)
+  sample_idx <- match(SummarizedExperiment::colData(sce)$Sample, meta_data[[column_id]])
+  if (anyNA(sample_idx)) {
+    unmatched <- unique(SummarizedExperiment::colData(sce)$Sample[is.na(sample_idx)])
+    warning("Sample(s) with no matching row in metadata_file (column_id = '", column_id,
+            "'): ", paste(unmatched, collapse = ", "), ". Their cells will have NA metadata.",
+            call. = FALSE)
+  }
+  for (x in colnames(meta_data)) {
+    SummarizedExperiment::colData(sce)[[x]] <- meta_data[[x]][sample_idx]
+  }
 
   message("Annotated with ", ncol(meta_data), " metadata columns")
 
@@ -124,8 +131,10 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
     # 1-based integer -- NOT the sample.names we supplied. So the map here goes
     # index (as a string, e.g. "1") -> real sample name, to translate that
     # numeric prefix into something readable.
-    sample_levels <- levels(as.factor(SummarizedExperiment::colData(sce)$Sample))
-    gsm.map <- stats::setNames(sample_levels, seq_along(sample_levels))
+    # Map index -> sample name in the SAME order the files were passed to
+    # read10xCounts() (names(all_files)), not alphabetical factor levels, which
+    # can differ (case, "S2" vs "S10", locale) and would mislabel cells.
+    gsm.map <- stats::setNames(names(all_files), seq_along(all_files))
 
     # Apply tags to column names
     new_names <- sapply(
@@ -232,7 +241,14 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
   anno_clean <- anno %>%
     dplyr::select(-tidyselect::any_of(c("ENTREZID", "ENZYME", "GENETYPE", "SYMBOL")))
 
-  seurat_obj@assays[["RNA"]]@meta.data <- seurat_obj@assays[["RNA"]]@meta.data %>%
+  # Join by an explicit feature ID. The Assay5 meta.data rows follow the
+  # feature order but its rownames are NOT the feature names, so set `ID` from
+  # rownames(seurat_obj) instead of relying on an ID column carried over from
+  # the SCE rowData. left_join() keeps the row order of the left table, and
+  # AnnotateGenes() returns one row per ID, so rows stay aligned with features.
+  rna_meta <- seurat_obj@assays[["RNA"]]@meta.data
+  rna_meta$ID <- rownames(seurat_obj)
+  seurat_obj@assays[["RNA"]]@meta.data <- rna_meta %>%
     dplyr::left_join(anno_clean, by = "ID", suffix = c("", ".anno")) %>%
     dplyr::select(-tidyselect::ends_with(".anno"))  # drop any remaining duplicates from anno side
 
@@ -262,21 +278,9 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
 
       message("Azimuth annotation completed")
 
-      # Create broad cell type categories
-      message("Creating CellType categories...")
-      seurat_obj$CellType <- dplyr::case_when(
-        seurat_obj$Subpopulation %in% c("L2/3 IT", "L5 IT", "L5 ET", "L5/6 NP", "L6 IT", "L6 IT Car3", "L6 CT", "L6b") ~ "Exc",
-        seurat_obj$Subpopulation %in% c("Meis2","Lamp5", "Vip", "Sst", "Sst Chodl", "Pvalb", "Sncg") ~ "Inh",
-        seurat_obj$Subpopulation %in% c("Astro") ~ "Astro",
-        seurat_obj$Subpopulation %in% c("Oligo") ~ "Oligo",
-        seurat_obj$Subpopulation %in% c("OPC") ~ "OPC",
-        seurat_obj$Subpopulation %in% c("Micro-PVM") ~ "Mic",
-        seurat_obj$Subpopulation %in% c("VLMC","Endo","Peri") ~ "End"
-      )
-
       seurat_obj
     }, error = function(e) {
-      warning("Azimuth annotation failed and was skipped -- Population/Subpopulation/CellType ",
+      warning("Azimuth annotation failed and was skipped -- Population/Subpopulation ",
               "will be absent from metadata.\n  Reason: ", conditionMessage(e))
       seurat_obj
     })
@@ -721,18 +725,29 @@ UploadData <- function(data, DataName, Condition = NULL, RefAnnotation1 = NULL, 
 #'   joining the first and last PC's stdev (the point of maximum curvature on
 #'   the ElbowPlot). Supply a number (1-30) to override the automatic choice.
 #'   PCA always computes 30 PCs, so \code{custom_pca} cannot exceed 30.
+#' @param cluster Logical. Run \code{Seurat::FindNeighbors()} +
+#'   \code{Seurat::FindClusters()} at the end, on \code{new.reduction} with the
+#'   same \code{n_dims} used for integration and UMAP. Default \code{TRUE}.
+#' @param resolutions Numeric vector of resolutions for
+#'   \code{Seurat::FindClusters()}; one metadata column per resolution
+#'   (\code{"<assay>_snn_res.<resolution>"}, e.g. \code{"RNA_snn_res.0.1"}).
+#'   Default \code{seq(0.1, 1, 0.1)}. See \code{ClusterTree()} to compare them.
 #' @param verbose Logical. Whether to print progress messages, including which
 #'   \code{n_dims} was selected. Default \code{TRUE}.
 #'
 #' @return The input \code{seurat_obj}, with its assay layers split and
 #'   re-joined, and \code{"pca"}, \code{new.reduction}, and
 #'   \code{reduction.name} reductions computed. The \code{n_dims} used is
-#'   stored at \code{seurat_obj@misc$n_dims} for later reference.
+#'   stored at \code{seurat_obj@misc$n_dims} for later reference. With
+#'   \code{cluster = TRUE}, also the \code{"<assay>_nn"}/\code{"<assay>_snn"}
+#'   graphs and one cluster column per resolution (column prefix stored at
+#'   \code{seurat_obj@misc$cluster_prefix}).
 #'
 #' @examples
 #' \dontrun{
 #' seurat_obj <- SeuratPipeline(seurat_obj)
 #' seurat_obj <- SeuratPipeline(seurat_obj, custom_pca = 10)
+#' seurat_obj <- SeuratPipeline(seurat_obj, resolutions = c(0.1, 0.3, 0.5))
 #' }
 #'
 #' @export
@@ -746,6 +761,8 @@ SeuratPipeline <- function(
     reduction.name = "umap_harmony",
     reduction.key = "Harmony_",
     custom_pca = NULL,
+    cluster = TRUE,
+    resolutions = seq(0.1, 1, 0.1),
     verbose = TRUE
 ) {
   if (!sample_col %in% colnames(seurat_obj@meta.data)) {
@@ -764,6 +781,11 @@ SeuratPipeline <- function(
   # RunPCA()'s `npcs`) and fail deep inside irlba with the opaque "non-numeric
   # argument to binary operator" (from `nv + 7`). Reject non-numeric input here
   # -- strings are NOT silently coerced.
+  if (isTRUE(cluster) && (!is.numeric(resolutions) || !length(resolutions) ||
+                          anyNA(resolutions) || any(resolutions <= 0))) {
+    stop("`resolutions` must be a numeric vector of positive values, e.g. seq(0.1, 1, 0.1).")
+  }
+
   if (!is.null(custom_pca)) {
     if (!is.numeric(custom_pca) || length(custom_pca) != 1 || is.na(custom_pca) || custom_pca < 1) {
       stop("`custom_pca` must be a single positive number (numeric, unquoted -- ",
@@ -830,6 +852,37 @@ SeuratPipeline <- function(
     reduction.key  = reduction.key,
     verbose        = FALSE
   )
+
+  # Clustering on the same integrated reduction and the same n_dims as the
+  # integration/UMAP above, at every requested resolution.
+  if (isTRUE(cluster)) {
+    graph <- paste0(assay, "_snn")
+    if (verbose) {
+      message("Clustering (", new.reduction, ", dims 1:", n_dims, ") at resolution(s): ",
+              paste(resolutions, collapse = ", "))
+    }
+    seurat_obj <- Seurat::FindNeighbors(
+      seurat_obj,
+      reduction  = new.reduction,
+      dims       = 1:n_dims,
+      graph.name = c(paste0(assay, "_nn"), graph),
+      verbose    = FALSE
+    )
+    seurat_obj <- Seurat::FindClusters(
+      seurat_obj,
+      graph.name = graph,
+      resolution = resolutions,
+      verbose    = FALSE
+    )
+    seurat_obj@misc$cluster_prefix <- paste0(graph, "_res.")
+    if (verbose) {
+      cols <- intersect(paste0(seurat_obj@misc$cluster_prefix, resolutions),
+                        colnames(seurat_obj@meta.data))
+      n_cl <- vapply(cols, function(cl) length(unique(seurat_obj@meta.data[[cl]])), integer(1))
+      message("Clusters per resolution: ",
+              paste0(sub(".*_res\\.", "", cols), " = ", n_cl, collapse = ", "))
+    }
+  }
 
   seurat_obj@misc$n_dims <- n_dims
   seurat_obj
