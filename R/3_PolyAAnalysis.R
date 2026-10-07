@@ -1011,6 +1011,52 @@ PolyAPipeline <- function(seurat_obj,
 #'   highlights. This avoids the "'start' or 'end' cannot contain NAs" error
 #'   and removes the need to pre-filter \code{deg_list} with
 #'   \code{complete.cases()}.
+#' @param condition_col,control Alternative to \code{condition_group_cols} for
+#'   \code{Condition} labels that name only the treated group (e.g.
+#'   \code{"3xTg + Alcohol"}): the metadata column holding those labels and the
+#'   control label (e.g. \code{"B6 + Control"}). The coverage keeps the cells
+#'   whose label is in \code{condition} or \code{control}; \code{group.by}
+#'   defaults to \code{condition_col}.
+#' @param normalize Coverage scale. \code{"signac"} (default) keeps
+#'   \code{Signac::CoveragePlot()}. \code{"counts"}: coverage per million polyA
+#'   counts of each group. \code{"gene"}: each group divided by its own
+#'   molecules on the gene's sites, so the track shows relative site usage
+#'   (APA) independently of expression.
+#' @param dedup_umi Logical. Collapse fragment reads to molecules (cell
+#'   barcode + UMI) before computing coverage. Default \code{FALSE}.
+#' @param overlay Logical. All groups of a track in one panel (one colour per
+#'   group) instead of one sub-track per group. Default \code{FALSE}.
+#' @param replicate_col Metadata column with the biological replicate (e.g.
+#'   \code{"Number"}); needed for \code{show_replicates} and boxplots.
+#' @param show_replicates Logical. Draw each replicate (normalised by its own
+#'   molecules/counts) as a thin line, and as points in the side panels.
+#'   Default \code{FALSE}.
+#' @param usage_panel Logical. Side panel with the usage of each site.
+#'   Default \code{FALSE}.
+#' @param usage_type \code{"bar"} (pooled group) or \code{"box"} (over
+#'   replicates; needs \code{replicate_col}) for the side panels.
+#' @param usage_scale \code{"percent"} (\% of the gene's molecules, default) or
+#'   \code{"cpm"} (log2(CPM + 1) per site) for the usage panel.
+#' @param usage_sites \code{"significant"} (default): only the gene's sites in
+#'   \code{deg_list} for the selected cell type / condition(s) -- the ones in
+#'   the PAS track -- are numbered S1..Sn and used for usage, gene
+#'   normalisation and polyA expression. \code{"all"}: every site of the gene
+#'   in \code{polyAdb}.
+#' @param expression_panel Logical. Side panel with the gene's expression,
+#'   log2(CPM + 1) per group. Default \code{FALSE}.
+#' @param expression_source \code{"RNA"} (gene counts in the RNA assay,
+#'   default) or \code{"polyA"} (molecules on the gene's sites).
+#' @param panels_layout \code{"row"} (side panels next to each other, default)
+#'   or \code{"column"} (one below the other).
+#' @param bulk_title Logical. Show the "Bulk" title on the bulk track.
+#'   Default \code{FALSE}.
+#' @param legend_position Legend position for the fragment-based tracks
+#'   (\code{"top"}, \code{"bottom"}, \code{"right"}, \code{"none"}...).
+#'   Default \code{"top"}.
+#' @param site_labels Logical. Label the sites S1, S2, ... (5' to 3') above
+#'   the PAS triangles. Default \code{TRUE}.
+#' @param bin_size Bin width (bp) of the fragment-based coverage. Default
+#'   \code{10}.
 #' @param verbose Logical. Whether to print progress messages. Default \code{TRUE}
 #' @param text_size Numeric. General text size for plot elements. Default \code{14}
 #' @param axis_text_size Numeric. Text size for axis tick labels. Default \code{12}
@@ -1019,8 +1065,16 @@ PolyAPipeline <- function(seurat_obj,
 #' @param legend_text_size Numeric. Text size for legend labels. Default \code{12}
 #' @param legend_title_size Numeric. Text size for legend title. Default \code{14}
 #'
+#' @details With the defaults the coverage comes from
+#'   \code{Signac::CoveragePlot()}. Setting \code{dedup_umi},
+#'   \code{normalize = "counts"/"gene"}, \code{overlay},
+#'   \code{show_replicates}, \code{usage_panel} or \code{expression_panel}
+#'   builds the coverage directly from the polyA fragment files (tabix) instead;
+#'   \code{group.by} then defines the groups and \code{split.by} is ignored.
+#'
 #' @return A combined track plot (\code{patchwork} object) with coverage, polyA
-#'   sites, peaks, and gene annotation tracks
+#'   sites, peaks, and gene annotation tracks, plus the side panels when
+#'   requested.
 #'
 #' @export
 #'
@@ -1046,14 +1100,32 @@ PolyAPlot <- function(
     condition_group_cols = NULL,
     condition_group_sep  = "_",
     condition_vs         = "_vs_",
+    condition_col        = NULL,
+    control              = NULL,
     cell_order      = NULL,
     plot_layers     = c("All", "Tracks"),
     bulk            = TRUE,
     remove_na       = TRUE,
+    normalize       = c("signac", "counts", "gene"),
+    dedup_umi       = FALSE,
+    overlay         = FALSE,
+    replicate_col   = NULL,
+    show_replicates = FALSE,
+    usage_panel     = FALSE,
+    usage_type      = c("bar", "box"),
+    expression_panel  = FALSE,
+    bulk_title        = FALSE,
+    expression_source = c("RNA", "polyA"),
+    usage_scale       = c("percent", "cpm"),
+    panels_layout     = c("row", "column"),
+    usage_sites       = c("significant", "all"),
+    legend_position = "top",
+    site_labels     = TRUE,
+    bin_size        = 10,
     verbose         = TRUE,
     text_size       = 12,
     axis_text_size  = 10,
-    axis_title_size = 12,
+    axis_title_size = 11,
     strip_text_size = 10,
     legend_text_size  = 8,
     legend_title_size = 10
@@ -1064,6 +1136,32 @@ PolyAPlot <- function(
   species     <- match.arg(species)
   version     <- match.arg(version)
   plot_layers <- match.arg(plot_layers)
+  normalize   <- match.arg(normalize)
+
+  # Coverage from the fragment files (instead of Signac::CoveragePlot) when any
+  # of the new coverage options is requested.
+  use_fragments <- isTRUE(dedup_umi) || normalize != "signac" || isTRUE(overlay) ||
+    isTRUE(show_replicates) || isTRUE(usage_panel) || isTRUE(expression_panel)
+  if (use_fragments && normalize == "signac") {
+    if (verbose) message("Coverage built from fragments: using normalize = \"counts\".")
+    normalize <- "counts"
+  }
+  usage_type <- match.arg(usage_type)
+  expression_source <- match.arg(expression_source)
+  usage_scale       <- match.arg(usage_scale)
+  panels_layout     <- match.arg(panels_layout)
+  usage_sites       <- match.arg(usage_sites)
+
+  # Work on the polyA assay (local copy): Signac::CoveragePlot()/PeakPlot()
+  # use the default assay's fragments and peaks.
+  if (!"polyA" %in% SeuratObject::Assays(seu)) stop("`seu` has no 'polyA' assay.")
+  SeuratObject::DefaultAssay(seu) <- "polyA"
+  if (isTRUE(usage_panel) && usage_type == "box" && is.null(replicate_col)) {
+    stop("`usage_type = \"box\"` needs `replicate_col` (one value per replicate).")
+  }
+  if (isTRUE(show_replicates) && is.null(replicate_col)) {
+    stop("`show_replicates = TRUE` needs `replicate_col` (e.g. \"Number\").")
+  }
 
   # `cell_order` was renamed to `cell_filter` (it always acted as a filter, not
   # an ordering). Keep the old name working as a deprecated alias.
@@ -1394,6 +1492,27 @@ PolyAPlot <- function(
   polyA_gene <- polyA_gene %>%
     dplyr::left_join(peak_conditions, by = "peak")
 
+  # Label the sites S1..Sn from 5' to 3' (S1 = most proximal). Used above the
+  # PAS triangles and in the site-usage / expression calculations.
+  #   usage_sites = "significant": only the gene's p_peak/d_peak sites for the
+  #     selected cell type and condition(s) -- numbered and
+  #     used for usage %, gene normalisation and polyA expression.
+  #   usage_sites = "all": every site of the gene in polyAdb.
+  if (nrow(polyA_gene) > 0) {
+    # "significant" = the sites of THIS gene's rows for the selected cell type
+    # and condition(s) (`results`, which also defines the plotted region) --
+    # not deg_list as a whole, which also holds other cell types' sites.
+    sig_peaks <- unique(stats::na.omit(c(results$p_peak, results$d_peak)))
+    use_site <- if (usage_sites == "significant") polyA_gene$peak %in% sig_peaks
+                else rep(TRUE, nrow(polyA_gene))
+    idx <- which(use_site)
+    site_strand <- as.character(polyA_gene$strand[1])
+    ord <- idx[order(if (identical(site_strand, "-")) -polyA_gene$hg38_Position[idx]
+                     else polyA_gene$hg38_Position[idx])]
+    polyA_gene$site <- NA_character_
+    polyA_gene$site[ord] <- paste0("S", seq_along(ord))
+  }
+
   if (nrow(polyA_gene) == 0) {
     warning("No polyA sites found in polyAdb for gene '", gene, "'")
     polyA_gr <- GenomicRanges::GRanges()
@@ -1406,7 +1525,8 @@ PolyAPlot <- function(
         end = polyA_gene$hg38_Position
       ),
       strand = polyA_gene$strand,
-      Condition = polyA_gene$conditions
+      Condition = polyA_gene$conditions,
+      site = polyA_gene$site
     )
 
     #peak.intersect <- subsetByOverlaps(x = polyA_gr, ranges = roi_expanded)
@@ -1421,7 +1541,10 @@ PolyAPlot <- function(
   gene_plot <- plot_annotation_from_granges(
     gene = gene,
     gene_annot_all  = gene_annot_all,
-    roi_expanded    = roi_expanded
+    roi_expanded    = roi_expanded,
+    text_size       = text_size,
+    axis_text_size  = axis_text_size,
+    axis_title_size = axis_title_size
   )
 
   # Check version
@@ -1476,7 +1599,33 @@ PolyAPlot <- function(
   # PolyAPlot knows how the label maps to metadata (e.g. c("Strain","Treatment")
   # -> "B6_Alcohol"); without it the region/labels are still condition-filtered
   # but the coverage cells are not.
-  if (!is.null(condition)) {
+  #
+  # Alternative for labels that name only the treated group (e.g. "3xTg +
+  # Alcohol", compared with a control such as "B6 + Control"): give the
+  # metadata column holding those labels (`condition_col`) and the `control`;
+  # the coverage keeps the cells whose label is one of `condition` or `control`.
+  if (!is.null(condition) && !is.null(condition_col)) {
+    if (!condition_col %in% colnames(seu@meta.data)) {
+      stop("`condition_col` '", condition_col, "' not found in seu metadata.")
+    }
+    if (is.null(control)) {
+      stop("Give `control` (e.g. \"B6 + Control\") together with `condition_col`.")
+    }
+    grp_keep <- unique(c(condition, control))
+    lab <- as.character(seu@meta.data[[condition_col]])
+    bad <- setdiff(grp_keep, unique(lab))
+    if (length(bad)) {
+      stop("Not found in seu$", condition_col, ": ", paste(bad, collapse = ", "),
+           ". Available: ", paste(unique(lab), collapse = ", "))
+    }
+    keep_cond <- lab %in% grp_keep
+    if (verbose) {
+      message("Condition coverage filter kept ", sum(keep_cond), " / ", ncol(seu),
+              " cells (", condition_col, " in {", paste(grp_keep, collapse = ", "), "}).")
+    }
+    seu <- seu[, keep_cond]
+    if (is.null(group.by)) group.by <- condition_col
+  } else if (!is.null(condition)) {
     if (is.null(condition_group_cols)) {
       if (verbose) {
         message("Note: coverage cells NOT filtered by condition -- pass ",
@@ -1510,6 +1659,98 @@ PolyAPlot <- function(
       seu <- seu[, keep_cond]
     }
   }
+
+  cov_extra <- NULL
+  if (use_fragments) {
+    # --- Coverage from the polyA fragment files --------------------------------
+    # Same tracks as the Signac path (one "Bulk" track, or one per filter_col
+    # value), each split (or overlaid) by group.by. See .PolyACoverageTracks().
+    md <- seu@meta.data
+    if (!is.null(split.by) && verbose) {
+      message("`split.by` is ignored when the coverage is built from fragments.")
+    }
+    if (is.null(group.by)) {
+      group_of <- stats::setNames(rep("All cells", ncol(seu)), colnames(seu))
+      group_levels <- "All cells"
+    } else {
+      if (!all(group.by %in% colnames(md))) {
+        stop("`group.by` column(s) not found in seu metadata: ",
+             paste(setdiff(group.by, colnames(md)), collapse = ", "))
+      }
+      gv <- if (length(group.by) > 1) do.call(paste, c(md[group.by], sep = "_"))
+            else md[[group.by]]
+      group_levels <- if (is.factor(gv)) levels(droplevels(gv)) else sort(unique(as.character(gv)))
+      group_of <- stats::setNames(as.character(gv), colnames(seu))
+    }
+    rep_of <- NULL
+    if (!is.null(replicate_col)) {
+      if (!replicate_col %in% colnames(md)) {
+        stop("`replicate_col` '", replicate_col, "' not found in seu metadata.")
+      }
+      rep_of <- stats::setNames(as.character(md[[replicate_col]]), colnames(seu))
+    }
+
+    if (isTRUE(bulk)) {
+      tracks <- list(Bulk = colnames(seu))
+    } else {
+      if (!filter_col %in% colnames(md)) {
+        stop("`filter_col` '", filter_col, "' not found in seu metadata.")
+      }
+      track_vals <- if (!is.null(cell_filter)) {
+        intersect(cell_filter, unique(as.character(md[[filter_col]])))
+      } else {
+        unique(as.character(md[[filter_col]]))
+      }
+      tracks <- stats::setNames(lapply(track_vals, function(x) {
+        colnames(seu)[!is.na(md[[filter_col]]) & as.character(md[[filter_col]]) == x]
+      }), track_vals)
+    }
+    cell_types <- names(tracks)
+
+    sites_gene <- polyA_gene[!is.na(polyA_gene$site), , drop = FALSE]
+    sites_df <- if (nrow(sites_gene) > 0) {
+      # site windows from start/end, or parsed from the "chr-start-end" peak name
+      pk_parts <- do.call(rbind, strsplit(as.character(sites_gene$peak), "-", fixed = TRUE))
+      s_start  <- if ("start" %in% colnames(sites_gene)) sites_gene$start else as.integer(pk_parts[, 2])
+      s_end    <- if ("end"   %in% colnames(sites_gene)) sites_gene$end   else as.integer(pk_parts[, 3])
+      data.frame(site = sites_gene$site, peak = sites_gene$peak,
+                 start = s_start, end = s_end,
+                 stringsAsFactors = FALSE)[order(as.integer(sub("^S", "", sites_gene$site))), ]
+    } else {
+      data.frame(site = character(0), peak = character(0), start = integer(0), end = integer(0))
+    }
+
+    cov_extra <- .PolyACoverageTracks(
+      seu = seu, assay = "polyA", tracks = tracks,
+      group_of = group_of, group_levels = group_levels,
+      rep_of = rep_of, show_replicates = show_replicates,
+      sites = sites_df,
+      chr = as.character(GenomicRanges::seqnames(roi_expanded))[1],
+      roi_start = roi_start, roi_end = roi_end,
+      dedup_umi = dedup_umi, normalize = normalize, overlay = overlay,
+      bin_size = bin_size, highlight = region.highlight, colors = colors,
+      usage_panel = usage_panel, text_size = text_size,
+      axis_text_size = axis_text_size, axis_title_size = axis_title_size,
+      strip_text_size = strip_text_size, legend_text_size = legend_text_size,
+      verbose = verbose,
+      legend_position = legend_position, usage_type = usage_type,
+      gene = gene, expression_panel = expression_panel,
+      expression_source = expression_source, usage_scale = usage_scale
+    )
+
+    # same track tag (cell type on top) as the Signac path
+    cov_plot_norm <- lapply(cell_types, function(x) {
+      cov_extra$plots[[x]] +
+        ggplot2::labs(tag = if (identical(x, "Bulk") && !isTRUE(bulk_title)) NULL else x) +
+        ggplot2::theme(
+          plot.tag          = ggplot2::element_text(angle = 0, size = text_size,
+                                                    hjust = 0.5, vjust = 0.5, face = "bold"),
+          plot.tag.position = "top"
+        )
+    })
+    names(cov_plot_norm) <- cell_types
+
+  } else {
 
   if (isTRUE(bulk)) {
     # One combined "Bulk" coverage track over all (filtered) cells. When the
@@ -1612,7 +1853,7 @@ PolyAPlot <- function(
         name   = paste0("Normalized signal\n(range 0 - ", round(ref_limits[2]), ")")
       )
     ) &
-      ggplot2::labs(tag = x) &
+      ggplot2::labs(tag = if (identical(x, "Bulk") && !isTRUE(bulk_title)) NULL else x) &
       ggplot2::theme(
         plot.tag          = ggplot2::element_text(
           angle = 0,
@@ -1625,6 +1866,8 @@ PolyAPlot <- function(
       )
   })
   names(cov_plot_norm) <- cell_types
+
+  }  # end Signac coverage path
 
   peak_plot <- suppressWarnings(
     Signac::PeakPlot(
@@ -1647,7 +1890,15 @@ PolyAPlot <- function(
       size = 2.5,
       shape = 25,
     ) +
-    ggplot2::coord_cartesian(xlim = c(roi_start, roi_end), ylim = c(0.25, 0.75)) +
+    {
+      if (isTRUE(site_labels) && "site" %in% colnames(df) && nrow(df) > 0)
+        ggplot2::geom_text(
+          ggplot2::aes(x = start, y = 0.68, label = site),
+          vjust = 0, size = axis_text_size / ggplot2::.pt
+        )
+    } +
+    ggplot2::coord_cartesian(xlim = c(roi_start, roi_end),
+                             ylim = c(0.25, if (isTRUE(site_labels)) 1.05 else 0.75)) +
     ggplot2::labs(y = "\nPAS") +
     ggplot2::theme_classic() +
     ggplot2::theme(
@@ -1661,7 +1912,7 @@ PolyAPlot <- function(
       legend.title  = ggplot2::element_text(size = legend_title_size)
     )
 
-  if (plot_layers == "All") {
+  out <- if (plot_layers == "All") {
     Signac::CombineTracks(
       plotlist = c(
         cov_plot_norm,
@@ -1671,7 +1922,8 @@ PolyAPlot <- function(
           gene_plot
         )
       ),
-      heights = c(rep(1.6, length(cov_plot_norm)), 0.5, 0.5, 1.5)
+      heights = c(rep(1.6, length(cov_plot_norm)),
+                  if (isTRUE(site_labels)) 0.7 else 0.5, 0.5, 1.5)
     )
   } else {
     Signac::CombineTracks(
@@ -1685,6 +1937,25 @@ PolyAPlot <- function(
     )
   }
 
+  # Site-usage panel to the right of the tracks
+  # Site-usage and expression panels to the right of the tracks
+  side <- if (!is.null(cov_extra)) Filter(Negate(is.null),
+                                          list(cov_extra$usage_plot, cov_extra$expr_plot)) else list()
+  if (length(side)) {
+    n_grp <- if (!is.null(cov_extra$expr)) length(unique(cov_extra$expr$group)) else 2
+    if (panels_layout == "column" && length(side) == 2) {
+      # usage panel on top, expression panel below, as one column
+      side_col <- patchwork::wrap_plots(side, ncol = 1)
+      out <- patchwork::wrap_plots(out, side_col, nrow = 1, widths = c(3, 1))
+    } else {
+      # side by side (default)
+      w <- c(3, if (!is.null(cov_extra$usage_plot)) 1,
+             if (!is.null(cov_extra$expr_plot)) 0.15 + 0.2 * n_grp)
+      out <- patchwork::wrap_plots(c(list(out), side), nrow = 1, widths = w)
+    }
+  }
+
+  out
 }
 
 

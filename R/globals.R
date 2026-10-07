@@ -22,5 +22,7 @@ utils::globalVariables(c(
   "cluster", "celltype", "n", "expected", "contaminant", "contaminants",
   "cells", "kept_prot",
   # FilterPeaks per-sample summary (R/3_PolyAAnalysis.R)
-  "location", "biotype", "kept"
+  "location", "biotype", "kept",
+  # PolyAPlot site labels (R/3_PolyAAnalysis.R)
+  "site"
 ))

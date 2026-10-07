@@ -69,7 +69,8 @@ Imports:
     purrr,
     SingleCellExperiment,
     SingleR,
-    edgeR
+    edgeR,
+    Rsamtools
 Suggests:
     SoupX,
     clustree,
