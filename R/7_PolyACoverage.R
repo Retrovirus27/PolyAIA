@@ -57,6 +57,7 @@
 #' @noRd
 .PolyACoverageTracks <- function(seu, assay, tracks, group_of, group_levels,
                                  rep_of, show_replicates, sites, chr,
+                                 replicate_coverage = FALSE,
                                  roi_start, roi_end, dedup_umi, normalize,
                                  overlay, bin_size, highlight, colors,
                                  usage_panel, text_size, axis_text_size,
@@ -145,7 +146,7 @@
         for (rp in unique(rep_of[gc])) {
           rc   <- gc[rep_of[gc] == rp]
           selr <- sel & reads$replicate == rp
-          if (isTRUE(show_replicates)) {
+          if (isTRUE(replicate_coverage)) {
             sig_rep[[length(sig_rep) + 1]] <- data.frame(
               track = tr, group = g, replicate = rp, pos = mids,
               value = cov_bins(selr) * scale_of(selr, rc))

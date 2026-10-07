@@ -1028,9 +1028,11 @@ PolyAPipeline <- function(seurat_obj,
 #'   group) instead of one sub-track per group. Default \code{FALSE}.
 #' @param replicate_col Metadata column with the biological replicate (e.g.
 #'   \code{"Number"}); needed for \code{show_replicates} and boxplots.
-#' @param show_replicates Logical. Draw each replicate (normalised by its own
-#'   molecules/counts) as a thin line, and as points in the side panels.
-#'   Default \code{FALSE}.
+#' @param show_replicates Logical. Show each replicate as a point in the side
+#'   panels (usage / expression). Default \code{FALSE}.
+#' @param replicate_coverage Logical. Also draw each replicate (normalised by
+#'   its own molecules/counts) as a thin line in the coverage (builds the
+#'   coverage from the fragments). Default \code{FALSE}.
 #' @param usage_panel Logical. Side panel with the usage of each site.
 #'   Default \code{FALSE}.
 #' @param usage_type \code{"bar"} (pooled group) or \code{"box"} (over
@@ -1067,10 +1069,14 @@ PolyAPipeline <- function(seurat_obj,
 #'
 #' @details With the defaults the coverage comes from
 #'   \code{Signac::CoveragePlot()}. Setting \code{dedup_umi},
-#'   \code{normalize = "counts"/"gene"}, \code{overlay},
-#'   \code{show_replicates}, \code{usage_panel} or \code{expression_panel}
-#'   builds the coverage directly from the polyA fragment files (tabix) instead;
-#'   \code{group.by} then defines the groups and \code{split.by} is ignored.
+#'   \code{normalize = "counts"/"gene"}, \code{overlay} or
+#'   \code{replicate_coverage} builds the coverage directly from the polyA
+#'   fragment files (tabix) instead; \code{group.by} then defines the groups and
+#'   \code{split.by} is ignored. The side panels (\code{usage_panel},
+#'   \code{expression_panel}) are always computed from the fragments; with the
+#'   Signac coverage their groups combine \code{split.by} and \code{group.by}
+#'   (e.g. \code{"B6_Alcohol"} for \code{split.by = "Strain"},
+#'   \code{group.by = "Treatment"}).
 #'
 #' @return A combined track plot (\code{patchwork} object) with coverage, polyA
 #'   sites, peaks, and gene annotation tracks, plus the side panels when
@@ -1111,6 +1117,7 @@ PolyAPlot <- function(
     overlay         = FALSE,
     replicate_col   = NULL,
     show_replicates = FALSE,
+    replicate_coverage = FALSE,
     usage_panel     = FALSE,
     usage_type      = c("bar", "box"),
     expression_panel  = FALSE,
@@ -1140,8 +1147,11 @@ PolyAPlot <- function(
 
   # Coverage from the fragment files (instead of Signac::CoveragePlot) when any
   # of the new coverage options is requested.
+  # The side panels (usage / expression) are computed from the fragments too,
+  # but on their own they keep the Signac coverage.
   use_fragments <- isTRUE(dedup_umi) || normalize != "signac" || isTRUE(overlay) ||
-    isTRUE(show_replicates) || isTRUE(usage_panel) || isTRUE(expression_panel)
+    isTRUE(replicate_coverage)
+  need_panels   <- isTRUE(usage_panel) || isTRUE(expression_panel)
   if (use_fragments && normalize == "signac") {
     if (verbose) message("Coverage built from fragments: using normalize = \"counts\".")
     normalize <- "counts"
@@ -1159,8 +1169,8 @@ PolyAPlot <- function(
   if (isTRUE(usage_panel) && usage_type == "box" && is.null(replicate_col)) {
     stop("`usage_type = \"box\"` needs `replicate_col` (one value per replicate).")
   }
-  if (isTRUE(show_replicates) && is.null(replicate_col)) {
-    stop("`show_replicates = TRUE` needs `replicate_col` (e.g. \"Number\").")
+  if ((isTRUE(show_replicates) || isTRUE(replicate_coverage)) && is.null(replicate_col)) {
+    stop("`show_replicates` / `replicate_coverage` need `replicate_col` (e.g. \"Number\").")
   }
 
   # `cell_order` was renamed to `cell_filter` (it always acted as a filter, not
@@ -1661,24 +1671,27 @@ PolyAPlot <- function(
   }
 
   cov_extra <- NULL
-  if (use_fragments) {
+  if (use_fragments || need_panels) {
     # --- Coverage from the polyA fragment files --------------------------------
     # Same tracks as the Signac path (one "Bulk" track, or one per filter_col
     # value), each split (or overlaid) by group.by. See .PolyACoverageTracks().
     md <- seu@meta.data
-    if (!is.null(split.by) && verbose) {
+    if (!is.null(split.by) && use_fragments && verbose) {
       message("`split.by` is ignored when the coverage is built from fragments.")
     }
-    if (is.null(group.by)) {
+    # Signac coverage + side panels: the panels use the same groups as the
+    # Signac tracks, combining split.by and group.by (e.g. Strain_Treatment).
+    panel_by <- if (!use_fragments && !is.null(split.by)) c(split.by, group.by) else group.by
+    if (is.null(panel_by)) {
       group_of <- stats::setNames(rep("All cells", ncol(seu)), colnames(seu))
       group_levels <- "All cells"
     } else {
-      if (!all(group.by %in% colnames(md))) {
-        stop("`group.by` column(s) not found in seu metadata: ",
-             paste(setdiff(group.by, colnames(md)), collapse = ", "))
+      if (!all(panel_by %in% colnames(md))) {
+        stop("`group.by`/`split.by` column(s) not found in seu metadata: ",
+             paste(setdiff(panel_by, colnames(md)), collapse = ", "))
       }
-      gv <- if (length(group.by) > 1) do.call(paste, c(md[group.by], sep = "_"))
-            else md[[group.by]]
+      gv <- if (length(panel_by) > 1) do.call(paste, c(md[panel_by], sep = "_"))
+            else md[[panel_by]]
       group_levels <- if (is.factor(gv)) levels(droplevels(gv)) else sort(unique(as.character(gv)))
       group_of <- stats::setNames(as.character(gv), colnames(seu))
     }
@@ -1724,10 +1737,12 @@ PolyAPlot <- function(
       seu = seu, assay = "polyA", tracks = tracks,
       group_of = group_of, group_levels = group_levels,
       rep_of = rep_of, show_replicates = show_replicates,
+      replicate_coverage = replicate_coverage,
       sites = sites_df,
       chr = as.character(GenomicRanges::seqnames(roi_expanded))[1],
       roi_start = roi_start, roi_end = roi_end,
-      dedup_umi = dedup_umi, normalize = normalize, overlay = overlay,
+      dedup_umi = dedup_umi, normalize = if (normalize == "signac") "counts" else normalize,
+      overlay = overlay,
       bin_size = bin_size, highlight = region.highlight, colors = colors,
       usage_panel = usage_panel, text_size = text_size,
       axis_text_size = axis_text_size, axis_title_size = axis_title_size,
@@ -1739,7 +1754,7 @@ PolyAPlot <- function(
     )
 
     # same track tag (cell type on top) as the Signac path
-    cov_plot_norm <- lapply(cell_types, function(x) {
+    if (use_fragments) cov_plot_norm <- lapply(cell_types, function(x) {
       cov_extra$plots[[x]] +
         ggplot2::labs(tag = if (identical(x, "Bulk") && !isTRUE(bulk_title)) NULL else x) +
         ggplot2::theme(
@@ -1748,9 +1763,10 @@ PolyAPlot <- function(
           plot.tag.position = "top"
         )
     })
-    names(cov_plot_norm) <- cell_types
+    if (use_fragments) names(cov_plot_norm) <- cell_types
+  }
 
-  } else {
+  if (!use_fragments) {
 
   if (isTRUE(bulk)) {
     # One combined "Bulk" coverage track over all (filtered) cells. When the
