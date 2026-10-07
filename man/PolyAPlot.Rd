@@ -26,14 +26,32 @@ PolyAPlot(
   condition_group_cols = NULL,
   condition_group_sep = "_",
   condition_vs = "_vs_",
+  condition_col = NULL,
+  control = NULL,
   cell_order = NULL,
   plot_layers = c("All", "Tracks"),
   bulk = TRUE,
   remove_na = TRUE,
+  normalize = c("signac", "counts", "gene"),
+  dedup_umi = FALSE,
+  overlay = FALSE,
+  replicate_col = NULL,
+  show_replicates = FALSE,
+  usage_panel = FALSE,
+  usage_type = c("bar", "box"),
+  expression_panel = FALSE,
+  bulk_title = FALSE,
+  expression_source = c("RNA", "polyA"),
+  usage_scale = c("percent", "cpm"),
+  panels_layout = c("row", "column"),
+  usage_sites = c("significant", "all"),
+  legend_position = "top",
+  site_labels = TRUE,
+  bin_size = 10,
   verbose = TRUE,
   text_size = 12,
   axis_text_size = 10,
-  axis_title_size = 12,
+  axis_title_size = 11,
   strip_text_size = 10,
   legend_text_size = 8,
   legend_title_size = 10
@@ -122,6 +140,13 @@ a per-cell token. Default \code{"_"}.}
 \item{condition_vs}{Delimiter separating the two compared groups inside a
 \code{condition} label. Default \code{"_vs_"}.}
 
+\item{condition_col, control}{Alternative to \code{condition_group_cols} for
+\code{Condition} labels that name only the treated group (e.g.
+\code{"3xTg + Alcohol"}): the metadata column holding those labels and the
+control label (e.g. \code{"B6 + Control"}). The coverage keeps the cells
+whose label is in \code{condition} or \code{control}; \code{group.by}
+defaults to \code{condition_col}.}
+
 \item{cell_order}{Deprecated alias of \code{cell_filter} (it always acted as
 a filter, never an ordering). Default \code{NULL}.}
 
@@ -141,6 +166,62 @@ highlights. This avoids the "'start' or 'end' cannot contain NAs" error
 and removes the need to pre-filter \code{deg_list} with
 \code{complete.cases()}.}
 
+\item{normalize}{Coverage scale. \code{"signac"} (default) keeps
+\code{Signac::CoveragePlot()}. \code{"counts"}: coverage per million polyA
+counts of each group. \code{"gene"}: each group divided by its own
+molecules on the gene's sites, so the track shows relative site usage
+(APA) independently of expression.}
+
+\item{dedup_umi}{Logical. Collapse fragment reads to molecules (cell
+barcode + UMI) before computing coverage. Default \code{FALSE}.}
+
+\item{overlay}{Logical. All groups of a track in one panel (one colour per
+group) instead of one sub-track per group. Default \code{FALSE}.}
+
+\item{replicate_col}{Metadata column with the biological replicate (e.g.
+\code{"Number"}); needed for \code{show_replicates} and boxplots.}
+
+\item{show_replicates}{Logical. Draw each replicate (normalised by its own
+molecules/counts) as a thin line, and as points in the side panels.
+Default \code{FALSE}.}
+
+\item{usage_panel}{Logical. Side panel with the usage of each site.
+Default \code{FALSE}.}
+
+\item{usage_type}{\code{"bar"} (pooled group) or \code{"box"} (over
+replicates; needs \code{replicate_col}) for the side panels.}
+
+\item{expression_panel}{Logical. Side panel with the gene's expression,
+log2(CPM + 1) per group. Default \code{FALSE}.}
+
+\item{bulk_title}{Logical. Show the "Bulk" title on the bulk track.
+Default \code{FALSE}.}
+
+\item{expression_source}{\code{"RNA"} (gene counts in the RNA assay,
+default) or \code{"polyA"} (molecules on the gene's sites).}
+
+\item{usage_scale}{\code{"percent"} (\% of the gene's molecules, default) or
+\code{"cpm"} (log2(CPM + 1) per site) for the usage panel.}
+
+\item{panels_layout}{\code{"row"} (side panels next to each other, default)
+or \code{"column"} (one below the other).}
+
+\item{usage_sites}{\code{"significant"} (default): only the gene's sites in
+\code{deg_list} for the selected cell type / condition(s) -- the ones in
+the PAS track -- are numbered S1..Sn and used for usage, gene
+normalisation and polyA expression. \code{"all"}: every site of the gene
+in \code{polyAdb}.}
+
+\item{legend_position}{Legend position for the fragment-based tracks
+(\code{"top"}, \code{"bottom"}, \code{"right"}, \code{"none"}...).
+Default \code{"top"}.}
+
+\item{site_labels}{Logical. Label the sites S1, S2, ... (5' to 3') above
+the PAS triangles. Default \code{TRUE}.}
+
+\item{bin_size}{Bin width (bp) of the fragment-based coverage. Default
+\code{10}.}
+
 \item{verbose}{Logical. Whether to print progress messages. Default \code{TRUE}}
 
 \item{text_size}{Numeric. General text size for plot elements. Default \code{14}}
@@ -157,10 +238,19 @@ and removes the need to pre-filter \code{deg_list} with
 }
 \value{
 A combined track plot (\code{patchwork} object) with coverage, polyA
-  sites, peaks, and gene annotation tracks
+  sites, peaks, and gene annotation tracks, plus the side panels when
+  requested.
 }
 \description{
 Creates a combined track plot showing coverage, polyA sites, peaks, and gene
 annotation for a specified gene. Allows customization of region boundaries
 and text sizes for all plot elements.
+}
+\details{
+With the defaults the coverage comes from
+  \code{Signac::CoveragePlot()}. Setting \code{dedup_umi},
+  \code{normalize = "counts"/"gene"}, \code{overlay},
+  \code{show_replicates}, \code{usage_panel} or \code{expression_panel}
+  builds the coverage directly from the polyA fragment files (tabix) instead;
+  \code{group.by} then defines the groups and \code{split.by} is ignored.
 }
