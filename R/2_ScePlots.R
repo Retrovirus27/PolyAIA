@@ -149,8 +149,8 @@ QCFilter <- function(
 #' @param mito_col Column name for mitochondrial percentage (default "percent_mito")
 #' @param plot_types Vector of plot types to generate. Options:
 #'   "histogram", "violin", "scatter", "bar" (number of cells per
-#'   \code{split_by} group, same panels and \code{n_col}/\code{n_row} as the
-#'   other plots), or "all" (default)
+#'   \code{split_by} group, all groups together in one panel), or "all"
+#'   (default)
 #' @param split_by split "histogram", "violin", "scatter", "bar" by one or two
 #'   variables. Panel titles show only the value (e.g. "L2/3 IT").
 #' @param count_max Maximum x-axis value for count histogram (auto if NULL)
@@ -484,31 +484,36 @@ QCPlot <- function(
 
 
   # === CELL COUNT BARPLOT ===
-  # Same panels as the other plots (one panel per split_by group, laid out
-  # with n_col / n_row), one bar with the number of cells in each.
+  # One panel with all groups together (no facets): one bar per split_by
+  # group; with two split_by variables, x = the second one and bars side by
+  # side coloured by the first.
   if ("bar" %in% plot_types) {
-    bar_cells <- meta_data %>%
+    counts_df <- meta_data %>%
       dplyr::group_by(dplyr::across(dplyr::all_of(split_by))) %>%
-      dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
-      ggplot2::ggplot(ggplot2::aes(x = "Cells", y = n)) +
-      ggplot2::geom_col(fill = "lightblue", alpha = 0.7, width = 0.6) +
-      ggplot2::geom_text(ggplot2::aes(label = scales::comma(n)), vjust = -0.5, size = 3) +
+      dplyr::summarise(n = dplyr::n(), .groups = "drop")
+
+    if (is.null(split_by)) {
+      bar_cells <- ggplot2::ggplot(counts_df, ggplot2::aes(x = "Cells", y = n)) +
+        ggplot2::geom_col(fill = "lightblue", alpha = 0.7, width = 0.6) +
+        ggplot2::geom_text(ggplot2::aes(label = scales::comma(n)), vjust = -0.5, size = 3)
+    } else if (length(split_by) == 1) {
+      bar_cells <- ggplot2::ggplot(counts_df, ggplot2::aes(x = .data[[split_by[1]]], y = n)) +
+        ggplot2::geom_col(fill = "lightblue", alpha = 0.7) +
+        ggplot2::geom_text(ggplot2::aes(label = scales::comma(n)), vjust = -0.5, size = 3)
+    } else {
+      dodge <- ggplot2::position_dodge(width = 0.9)
+      bar_cells <- ggplot2::ggplot(counts_df, ggplot2::aes(x = .data[[split_by[2]]], y = n,
+                                                           fill = .data[[split_by[1]]])) +
+        ggplot2::geom_col(position = dodge, alpha = 0.8) +
+        ggplot2::geom_text(ggplot2::aes(label = scales::comma(n)), position = dodge,
+                           vjust = -0.5, size = 2.5) +
+        ggplot2::labs(fill = NULL)
+    }
+    bar_cells <- bar_cells +
       ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.15))) +
       ggplot2::labs(x = NULL, y = NULL, title = "Number of cells") +
       th +
       ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1))
-
-    if (!is.null(split_by)) {
-      facet_spec <- if (length(split_by) == 2) {
-        stats::as.formula(paste(split_by[1], "~", split_by[2]))
-      } else {
-        ggplot2::vars(.data[[split_by[1]]])
-      }
-      bar_cells <- bar_cells +
-        ggh4x::facet_nested_wrap(facet_spec, nrow = n_row, ncol = n_col, scales = "free_y",
-                                 labeller = ggplot2::label_value) +
-        ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-    }
 
     plot_list <- c(plot_list, list(bar_cells = bar_cells))
   }
