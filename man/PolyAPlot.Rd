@@ -37,6 +37,7 @@ PolyAPlot(
   overlay = FALSE,
   replicate_col = NULL,
   show_replicates = FALSE,
+  replicate_coverage = FALSE,
   usage_panel = FALSE,
   usage_type = c("bar", "box"),
   expression_panel = FALSE,
@@ -181,9 +182,12 @@ group) instead of one sub-track per group. Default \code{FALSE}.}
 \item{replicate_col}{Metadata column with the biological replicate (e.g.
 \code{"Number"}); needed for \code{show_replicates} and boxplots.}
 
-\item{show_replicates}{Logical. Draw each replicate (normalised by its own
-molecules/counts) as a thin line, and as points in the side panels.
-Default \code{FALSE}.}
+\item{show_replicates}{Logical. Show each replicate as a point in the side
+panels (usage / expression). Default \code{FALSE}.}
+
+\item{replicate_coverage}{Logical. Also draw each replicate (normalised by
+its own molecules/counts) as a thin line in the coverage (builds the
+coverage from the fragments). Default \code{FALSE}.}
 
 \item{usage_panel}{Logical. Side panel with the usage of each site.
 Default \code{FALSE}.}
@@ -249,8 +253,12 @@ and text sizes for all plot elements.
 \details{
 With the defaults the coverage comes from
   \code{Signac::CoveragePlot()}. Setting \code{dedup_umi},
-  \code{normalize = "counts"/"gene"}, \code{overlay},
-  \code{show_replicates}, \code{usage_panel} or \code{expression_panel}
-  builds the coverage directly from the polyA fragment files (tabix) instead;
-  \code{group.by} then defines the groups and \code{split.by} is ignored.
+  \code{normalize = "counts"/"gene"}, \code{overlay} or
+  \code{replicate_coverage} builds the coverage directly from the polyA
+  fragment files (tabix) instead; \code{group.by} then defines the groups and
+  \code{split.by} is ignored. The side panels (\code{usage_panel},
+  \code{expression_panel}) are always computed from the fragments; with the
+  Signac coverage their groups combine \code{split.by} and \code{group.by}
+  (e.g. \code{"B6_Alcohol"} for \code{split.by = "Strain"},
+  \code{group.by = "Treatment"}).
 }

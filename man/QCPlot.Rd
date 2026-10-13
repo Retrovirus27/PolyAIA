@@ -39,9 +39,12 @@ QCPlot(
 \item{mito_col}{Column name for mitochondrial percentage (default "percent_mito")}
 
 \item{plot_types}{Vector of plot types to generate. Options:
-"histogram", "violin", "scatter", or "all" (default)}
+"histogram", "violin", "scatter", "bar" (number of cells per
+\code{split_by} group, all groups together in one panel), or "all"
+(default)}
 
-\item{split_by}{split "histogram", "violin", "scatter" by a variable}
+\item{split_by}{split "histogram", "violin", "scatter", "bar" by one or two
+variables. Panel titles show only the value (e.g. "L2/3 IT").}
 
 \item{count_max}{Maximum x-axis value for count histogram (auto if NULL)}
 
