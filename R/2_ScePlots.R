@@ -148,8 +148,11 @@ QCFilter <- function(
 #' @param feature_col Column name for features (default "nFeature_RNA")
 #' @param mito_col Column name for mitochondrial percentage (default "percent_mito")
 #' @param plot_types Vector of plot types to generate. Options:
-#'   "histogram", "violin", "scatter", or "all" (default)
-#' @param split_by split "histogram", "violin", "scatter" by a variable
+#'   "histogram", "violin", "scatter", "bar" (number of cells per
+#'   \code{split_by} group, same panels and \code{n_col}/\code{n_row} as the
+#'   other plots), or "all" (default)
+#' @param split_by split "histogram", "violin", "scatter", "bar" by one or two
+#'   variables. Panel titles show only the value (e.g. "L2/3 IT").
 #' @param count_max Maximum x-axis value for count histogram (auto if NULL)
 #' @param count_breaks Break interval for count histogram (auto-calculated if NULL)
 #' @param feature_max Maximum x-axis value for features histogram (auto if NULL)
@@ -215,14 +218,14 @@ QCPlot <- function(
   }
 
   # Determine plot types
-  valid_types <- c("histogram", "violin", "scatter", "all")
+  valid_types <- c("histogram", "violin", "scatter", "bar", "all")
   invalid_types <- setdiff(plot_types, valid_types)
   if (length(invalid_types) > 0) {
     warning("Ignoring unrecognized plot_types: ", paste(invalid_types, collapse = ", "),
             ". Valid options: ", paste(valid_types, collapse = ", "))
   }
   if ("all" %in% plot_types) {
-    plot_types <- c("histogram", "violin", "scatter")
+    plot_types <- c("histogram", "violin", "scatter", "bar")
   }
 
   if (!is.null(split_by)) {
@@ -317,22 +320,22 @@ QCPlot <- function(
         facet_formula <- stats::as.formula(
           paste(split_by[1], "~", split_by[2])
         )
-        hist_count = hist_count + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_both) +
+        hist_count = hist_count + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.y = ggplot2::element_text(angle = 90, hjust = 0.5, vjust = 0.5),
                          strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-        hist_feature = hist_feature + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_both) +
+        hist_feature = hist_feature + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.y = ggplot2::element_text(angle = 90, hjust = 0.5, vjust = 0.5),
                          strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-        hist_mito = hist_mito + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_both) +
+        hist_mito = hist_mito + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.y = ggplot2::element_text(angle = 90, hjust = 0.5, vjust = 0.5),
                          strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
       } else {
         # Otherwise facet_wrap as before
-        hist_count = hist_count + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_both) +
+        hist_count = hist_count + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-        hist_feature = hist_feature + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_both) +
+        hist_feature = hist_feature + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-        hist_mito = hist_mito + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_both) +
+        hist_mito = hist_mito + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, scales = "free", labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
       }
     }
@@ -383,12 +386,12 @@ QCPlot <- function(
         facet_formula <- stats::as.formula(
           paste(split_by[1], "~", split_by[2])
         )
-        scatter_plot = scatter_plot + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, labeller = ggplot2::label_both) +
+        scatter_plot = scatter_plot + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.y = ggplot2::element_text(angle = 90, hjust = 0.5, vjust = 0.5),
                          strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
       } else {
         # Otherwise facet_wrap as before
-        scatter_plot = scatter_plot + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, labeller = ggplot2::label_both) +
+        scatter_plot = scatter_plot + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
       }
     }
@@ -441,37 +444,6 @@ QCPlot <- function(
       th +
       ggplot2::theme( axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1) )
 
-    # Cell count barplot
-    if (!is.null(split_by)) {
-      bar_cells <- meta_data %>%
-        dplyr::group_by(dplyr::across(dplyr::all_of(split_by))) %>%
-        dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
-        ggplot2::ggplot(ggplot2::aes(x = if (length(split_by) == 2) .data[[split_by[2]]] else .data[[split_by[1]]], y = n)) +
-        ggplot2::geom_col(fill = "lightblue", alpha = 0.7) +
-        ggplot2::geom_text(ggplot2::aes(label = scales::comma(n)), vjust = -0.5, size = 3) +
-        ggplot2::labs(x = NULL, y = NULL, title = NULL) +
-        th +
-        ggplot2::theme( axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1) )
-
-      if (length(split_by) == 2) {
-        bar_cells <- bar_cells +
-          ggplot2::facet_wrap(stats::as.formula(paste("~", split_by[1])), nrow = n_row, ncol = n_col, labeller = ggplot2::label_both) +
-          ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-      } else {
-        bar_cells <- bar_cells +
-          ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
-      }
-    } else {
-      bar_cells <- meta_data %>%
-        dplyr::summarise(n = dplyr::n()) %>%
-        ggplot2::ggplot(ggplot2::aes(x = "Number of cells", y = n)) +
-        ggplot2::geom_col(fill = "lightblue", alpha = 0.7) +
-        ggplot2::geom_text(ggplot2::aes(label = scales::comma(n)), vjust = -0.5, size = 3) +
-        ggplot2::labs(x = NULL, y = NULL, title = NULL) +
-        th +
-        ggplot2::theme( axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1) )
-    }
-
     # Add facet if split_by is set
     if (!is.null(split_by)) {
       # Ensure the variable(s) exist
@@ -483,22 +455,22 @@ QCPlot <- function(
         facet_formula <- stats::as.formula(
           paste(split_by[1], "~", split_by[2])
         )
-        violin_count = violin_count + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, labeller = ggplot2::label_both) +
+        violin_count = violin_count + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.y = ggplot2::element_text(angle = 90, hjust = 0.5, vjust = 0.5),
                          strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-        violin_feature = violin_feature + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, labeller = ggplot2::label_both) +
+        violin_feature = violin_feature + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.y = ggplot2::element_text(angle = 90, hjust = 0.5, vjust = 0.5),
                          strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-        violin_mito = violin_mito + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, labeller = ggplot2::label_both) +
+        violin_mito = violin_mito + ggh4x::facet_nested_wrap(facet_formula, nrow = n_row, ncol = n_col, labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.y = ggplot2::element_text(angle = 90, hjust = 0.5, vjust = 0.5),
                          strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
       } else {
         # Otherwise facet_wrap as before
-        violin_count = violin_count + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, labeller = ggplot2::label_both) +
+        violin_count = violin_count + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-        violin_feature = violin_feature + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, labeller = ggplot2::label_both) +
+        violin_feature = violin_feature + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
-        violin_mito = violin_mito + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, labeller = ggplot2::label_both) +
+        violin_mito = violin_mito + ggh4x::facet_nested_wrap(ggplot2::vars(.data[[split_by[1]]]), nrow = n_row, ncol = n_col, labeller = ggplot2::label_value) +
           ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
       }
     }
@@ -506,11 +478,40 @@ QCPlot <- function(
     plot_list <- c(plot_list, list(
       violin_count = violin_count,
       violin_feature = violin_feature,
-      violin_mito = violin_mito,
-      bar_cells = bar_cells
+      violin_mito = violin_mito
     ))
   }
 
+
+  # === CELL COUNT BARPLOT ===
+  # Same panels as the other plots (one panel per split_by group, laid out
+  # with n_col / n_row), one bar with the number of cells in each.
+  if ("bar" %in% plot_types) {
+    bar_cells <- meta_data %>%
+      dplyr::group_by(dplyr::across(dplyr::all_of(split_by))) %>%
+      dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+      ggplot2::ggplot(ggplot2::aes(x = "Cells", y = n)) +
+      ggplot2::geom_col(fill = "lightblue", alpha = 0.7, width = 0.6) +
+      ggplot2::geom_text(ggplot2::aes(label = scales::comma(n)), vjust = -0.5, size = 3) +
+      ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.15))) +
+      ggplot2::labs(x = NULL, y = NULL, title = "Number of cells") +
+      th +
+      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1))
+
+    if (!is.null(split_by)) {
+      facet_spec <- if (length(split_by) == 2) {
+        stats::as.formula(paste(split_by[1], "~", split_by[2]))
+      } else {
+        ggplot2::vars(.data[[split_by[1]]])
+      }
+      bar_cells <- bar_cells +
+        ggh4x::facet_nested_wrap(facet_spec, nrow = n_row, ncol = n_col, scales = "free_y",
+                                 labeller = ggplot2::label_value) +
+        ggplot2::theme(strip.text.x = ggplot2::element_text(angle = 0, hjust = 0.5, vjust = 0.5))
+    }
+
+    plot_list <- c(plot_list, list(bar_cells = bar_cells))
+  }
 
   # === COMBINE PLOTS ===
   if (length(plot_list) == 0) {
@@ -525,14 +526,13 @@ QCPlot <- function(
         plot_list$hist_feature |
         plot_list$hist_mito |
         plot_list$scatter
-    ) / (
-      plot_list$violin_count |
-        plot_list$violin_feature |
-        plot_list$violin_mito |
-        plot_list$bar_cells
+    ) / patchwork::wrap_plots(
+      Filter(Negate(is.null), plot_list[c("violin_count", "violin_feature",
+                                          "violin_mito", "bar_cells")]),
+      nrow = 1
     ) + patchwork::plot_annotation(
       title = "Quality Control Metrics Overview",
-      tag_levels = "A"
+      tag_levels = "I"
     )
   } else {
     # Auto-arrange based on selected plots
@@ -542,7 +542,7 @@ QCPlot <- function(
     combined_plot <- patchwork::wrap_plots(plot_list, ncol = n_col, nrow = n_row) +
       patchwork::plot_annotation(
         title = "Quality Control Metrics",
-        tag_levels = "A"
+        tag_levels = "I"
       )
   }
 
