@@ -24,5 +24,10 @@ utils::globalVariables(c(
   # FilterPeaks per-sample summary (R/3_PolyAAnalysis.R)
   "location", "biotype", "kept",
   # PolyAPlot site labels (R/3_PolyAAnalysis.R)
-  "site"
+  "site",
+  # APAdegsMatrix / CompareDEGs / CompareDEGsPlot (R/8_APAdegs.R)
+  "label", "group", "replicate", "n_sites", "baseMean", "log2FC", "pvalue", "padj",
+  "key_ct", "key_gene", "Cells_DEG", "cell_type", "avg_logFC", "p_val",
+  "logFC_DEG", "logFC_APAdeg", "pval_DEG", "pval_APAdeg", "padj_DEG", "padj_APAdeg",
+  "sig_DEG", "sig_APAdeg", "tested", "RED_sig"
 ))

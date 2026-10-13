@@ -75,6 +75,8 @@ Suggests:
     SoupX,
     clustree,
     ggraph,
-    Libra
+    Libra,
+    APAdeg
 Remotes:
-    neurorestore/Libra
+    neurorestore/Libra,
+    XuLabSJTU/APAdeg
