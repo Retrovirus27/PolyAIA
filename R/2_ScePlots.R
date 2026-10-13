@@ -998,7 +998,18 @@ DotPlot <- function(
   stats_df <- stats_df %>%
     dplyr::left_join(marker_df, by = "gene") %>%
     dplyr::group_by(gene) %>%
-    dplyr::mutate(avg_xp_scaled = as.numeric(scale(avg_exp)))
+    dplyr::mutate(avg_xp_scaled = as.numeric(scale(avg_exp))) %>%
+    dplyr::ungroup()
+
+  # Keep the order of the input list: genes in the order given (instead of
+  # ggplot's alphabetical order) and gene groups (facets) in list order.
+  gene_order <- unique(unlist(features, use.names = FALSE))
+  stats_df$gene <- factor(stats_df$gene,
+                          levels = c(gene_order, setdiff(unique(stats_df$gene), gene_order)))
+  if (!is.null(names(features))) {
+    stats_df$GeneGroup <- factor(as.character(stats_df$GeneGroup),
+                                 levels = unique(names(features)))
+  }
 
   # ---- Plot ----
   p <- ggplot2::ggplot(stats_df, ggplot2::aes(x = gene, y = !!dplyr::sym(group_var),
