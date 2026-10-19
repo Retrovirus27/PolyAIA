@@ -37,8 +37,9 @@
 #' @param run_azimuth Logical. Whether to run Azimuth cell type annotation
 #'   (adds \code{Population}, \code{Population_Score}, \code{Subpopulation},
 #'   \code{Subpopulation_Score}). Broader groupings (e.g. a \code{CellType}
-#'   column) are left to the user. If Azimuth fails, the pipeline continues
-#'   without these columns rather than aborting. Default \code{TRUE}
+#'   column) are left to the user. Runs \code{\link{AzimuthAnnotation}()}. If
+#'   Azimuth fails, the pipeline continues without these columns rather than
+#'   aborting. Default \code{TRUE}
 #' @param ncores Integer. Number of cores for parallel processing during doublet detection. Default \code{4}
 #' @param verbose Logical. Whether to print progress messages. Default \code{TRUE}
 #'
@@ -255,43 +256,7 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
 
   # Run Azimuth cell type annotation
   if (run_azimuth) {
-    message("Running Azimuth annotation with ", reference, "...")
-
-    # Azimuth internally calls some SeuratObject/Seurat generics (e.g. `Key<-`)
-    # unqualified, assuming they've been attached via library() rather than
-    # accessed via `::`. Since this package only Imports them, attach them to
-    # the search path here (if not already) so RunAzimuth can find them.
-    for (pkg in c("SeuratObject", "Seurat")) {
-      if (!paste0("package:", pkg) %in% search() && requireNamespace(pkg, quietly = TRUE)) {
-        suppressPackageStartupMessages(attachNamespace(pkg))
-      }
-    }
-
-    # RunAzimuth sends large objects to future workers; with big datasets they
-    # exceed future's default 500 MiB limit ("future.globals.maxSize") and the
-    # mapping fails. Raise it to at least 8000 MiB for this call only.
-    old_future <- options(future.globals.maxSize =
-                            max(8000 * 1024^2, getOption("future.globals.maxSize", 0)))
-    on.exit(options(old_future), add = TRUE)
-
-    seurat_obj <- tryCatch({
-      seurat_obj_dummy <- Azimuth::RunAzimuth(seurat_obj, reference = reference)
-
-      # Rename Azimuth predictions to standardized names
-      seurat_obj$Population <- seurat_obj_dummy$predicted.class[match(seurat_obj_dummy$row_names, seurat_obj$row_names)]
-      seurat_obj$Population_Score <- seurat_obj_dummy$predicted.class.score[match(seurat_obj_dummy$row_names, seurat_obj$row_names)]
-      seurat_obj$Subpopulation <- seurat_obj_dummy$predicted.subclass[match(seurat_obj_dummy$row_names, seurat_obj$row_names)]
-      seurat_obj$Subpopulation_Score <- seurat_obj_dummy$predicted.subclass.score[match(seurat_obj_dummy$row_names, seurat_obj$row_names)]
-
-      message("Azimuth annotation completed")
-
-      seurat_obj
-    }, error = function(e) {
-      message("Azimuth annotation FAILED: ", conditionMessage(e))
-      warning("Azimuth annotation failed and was skipped -- Population/Subpopulation ",
-              "will be absent from metadata.\n  Reason: ", conditionMessage(e))
-      seurat_obj
-    })
+    seurat_obj <- AzimuthAnnotation(seurat_obj, reference = reference)
   } else {
     message("Skipping Azimuth annotation (run_azimuth = FALSE).")
   }
@@ -300,6 +265,78 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
   gc()
   return(seurat_obj)
 }
+
+#' Cell type annotation with Azimuth
+#'
+#' Maps the cells to an Azimuth reference and adds \code{Population}
+#' (predicted class), \code{Population_Score}, \code{Subpopulation}
+#' (predicted subclass) and \code{Subpopulation_Score} to the metadata.
+#' \code{\link{UploadSce}()} runs it when \code{run_azimuth = TRUE}; it can also
+#' be run on an existing Seurat object.
+#'
+#' Azimuth sends large objects to future workers; with big datasets they
+#' exceed future's default 500 MiB limit (\code{future.globals.maxSize}), so it
+#' is raised to at least 8000 MiB during the call. If Azimuth fails, the
+#' object is returned without the new columns and the reason is printed.
+#'
+#' @param seurat_obj A Seurat object with an RNA assay (counts).
+#' @param reference Azimuth reference: \code{"humancortexref"} (default) or
+#'   \code{"mousecortexref"}.
+#'
+#' @return \code{seurat_obj} with \code{Population}, \code{Population_Score},
+#'   \code{Subpopulation} and \code{Subpopulation_Score}.
+#'
+#' @examples
+#' \dontrun{
+#' seurat_obj <- AzimuthAnnotation(seurat_obj, reference = "humancortexref")
+#' table(seurat_obj$Subpopulation)
+#' }
+#'
+#' @export
+AzimuthAnnotation <- function(seurat_obj, reference = c("humancortexref", "mousecortexref")) {
+  reference <- match.arg(reference)
+  if (!requireNamespace("Azimuth", quietly = TRUE)) {
+    stop("Package 'Azimuth' is required. Install with: remotes::install_github('satijalab/azimuth')")
+  }
+  message("Running Azimuth annotation with ", reference, "...")
+
+  # Azimuth internally calls some SeuratObject/Seurat generics (e.g. `Key<-`)
+  # unqualified, assuming they've been attached via library() rather than
+  # accessed via `::`. Since this package only Imports them, attach them to
+  # the search path here (if not already) so RunAzimuth can find them.
+  for (pkg in c("SeuratObject", "Seurat")) {
+    if (!paste0("package:", pkg) %in% search() && requireNamespace(pkg, quietly = TRUE)) {
+      suppressPackageStartupMessages(attachNamespace(pkg))
+    }
+  }
+
+  # RunAzimuth sends large objects to future workers; with big datasets they
+  # exceed future's default 500 MiB limit ("future.globals.maxSize") and the
+  # mapping fails. Raise it to at least 8000 MiB for this call only.
+  old_future <- options(future.globals.maxSize =
+                          max(8000 * 1024^2, getOption("future.globals.maxSize", 0)))
+  on.exit(options(old_future), add = TRUE)
+
+  tryCatch({
+    seurat_obj_dummy <- Azimuth::RunAzimuth(seurat_obj, reference = reference)
+    idx <- match(colnames(seurat_obj), colnames(seurat_obj_dummy))
+
+    # Rename Azimuth predictions to standardized names
+    seurat_obj$Population          <- seurat_obj_dummy$predicted.class[idx]
+    seurat_obj$Population_Score    <- seurat_obj_dummy$predicted.class.score[idx]
+    seurat_obj$Subpopulation       <- seurat_obj_dummy$predicted.subclass[idx]
+    seurat_obj$Subpopulation_Score <- seurat_obj_dummy$predicted.subclass.score[idx]
+
+    message("Azimuth annotation completed")
+    seurat_obj
+  }, error = function(e) {
+    message("Azimuth annotation FAILED: ", conditionMessage(e))
+    warning("Azimuth annotation failed and was skipped -- Population/Subpopulation ",
+            "will be absent from metadata.\n  Reason: ", conditionMessage(e))
+    seurat_obj
+  })
+}
+
 
 #' Annotate gene features with genomic information
 #'

@@ -56,8 +56,9 @@ Options: \code{"SYMBOL"}, \code{"GENETYPE"}, \code{"ENTREZID"}, \code{"ENZYME"},
 \item{run_azimuth}{Logical. Whether to run Azimuth cell type annotation
 (adds \code{Population}, \code{Population_Score}, \code{Subpopulation},
 \code{Subpopulation_Score}). Broader groupings (e.g. a \code{CellType}
-column) are left to the user. If Azimuth fails, the pipeline continues
-without these columns rather than aborting. Default \code{TRUE}}
+column) are left to the user. Runs \code{\link{AzimuthAnnotation}()}. If
+Azimuth fails, the pipeline continues without these columns rather than
+aborting. Default \code{TRUE}}
 
 \item{ncores}{Integer. Number of cores for parallel processing during doublet detection. Default \code{4}}
 
