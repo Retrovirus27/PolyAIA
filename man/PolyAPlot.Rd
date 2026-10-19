@@ -47,6 +47,7 @@ PolyAPlot(
   panels_layout = c("row", "column"),
   usage_sites = c("significant", "all"),
   legend_position = NULL,
+  protein_coding_only = FALSE,
   site_labels = TRUE,
   show_stats = TRUE,
   fdr_col = "PASTA_padj",
@@ -230,6 +231,11 @@ that left space for the transcript names), \code{"top"},
 \code{"bottom"}, \code{"left"}, \code{"right"}, \code{"none"}...
 \code{NULL} (default): \code{"axis"} with \code{overlay = TRUE},
 \code{"top"} otherwise.}
+
+\item{protein_coding_only}{Logical. Show only the protein-coding
+transcripts in the gene track (transcript biotype from the EnsDb of
+\code{version}: hg38 = v86, hg19 = v75, mm10 = v79; without it, the
+transcripts with a CDS). Default \code{FALSE}.}
 
 \item{site_labels}{Logical. Label the sites above the PAS triangles (and in
 the usage panel): \code{p} (proximal) and \code{d} (distal) of the RED

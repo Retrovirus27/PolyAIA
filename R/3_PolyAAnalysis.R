@@ -1064,6 +1064,10 @@ PolyAPipeline <- function(seurat_obj,
 #'   \code{"bottom"}, \code{"left"}, \code{"right"}, \code{"none"}...
 #'   \code{NULL} (default): \code{"axis"} with \code{overlay = TRUE},
 #'   \code{"top"} otherwise.
+#' @param protein_coding_only Logical. Show only the protein-coding
+#'   transcripts in the gene track (transcript biotype from the EnsDb of
+#'   \code{version}: hg38 = v86, hg19 = v75, mm10 = v79; without it, the
+#'   transcripts with a CDS). Default \code{FALSE}.
 #' @param site_labels Logical. Label the sites above the PAS triangles (and in
 #'   the usage panel): \code{p} (proximal) and \code{d} (distal) of the RED
 #'   pair; with more than one pair \code{p1}/\code{d1}, \code{p2}/\code{d2},
@@ -1151,6 +1155,7 @@ PolyAPlot <- function(
     panels_layout     = c("row", "column"),
     usage_sites       = c("significant", "all"),
     legend_position = NULL,
+    protein_coding_only = FALSE,
     site_labels     = TRUE,
     show_stats      = TRUE,
     fdr_col         = "PASTA_padj",
@@ -1491,6 +1496,37 @@ PolyAPlot <- function(
       if ("tx_id" %in% names(S4Vectors::mcols(gene_annot_all))) {
         message("Unique transcripts: ", length(unique(gene_annot_all$tx_id)))
       }
+    }
+  }
+
+  # Only protein-coding transcripts in the gene track: transcript biotype from
+  # the EnsDb of `version`; without it, the transcripts that have a CDS.
+  if (isTRUE(protein_coding_only) && length(gene_annot_all) > 0) {
+    tx_ids <- unique(as.character(gene_annot_all$tx_id))
+    ensdb <- switch(version,
+      hg38 = if (requireNamespace("EnsDb.Hsapiens.v86", quietly = TRUE)) EnsDb.Hsapiens.v86::EnsDb.Hsapiens.v86,
+      hg19 = if (requireNamespace("EnsDb.Hsapiens.v75", quietly = TRUE)) EnsDb.Hsapiens.v75::EnsDb.Hsapiens.v75,
+      mm10 = if (requireNamespace("EnsDb.Mmusculus.v79", quietly = TRUE)) EnsDb.Mmusculus.v79::EnsDb.Mmusculus.v79,
+      NULL)
+    pc <- NULL
+    if (!is.null(ensdb)) {
+      bt <- tryCatch(suppressMessages(AnnotationDbi::select(
+        ensdb, keys = tx_ids, keytype = "TXID", columns = c("TXID", "TXBIOTYPE"))),
+        error = function(e) NULL)
+      if (!is.null(bt) && nrow(bt)) pc <- intersect(tx_ids, bt$TXID[bt$TXBIOTYPE == "protein_coding"])
+    }
+    if (is.null(pc)) {
+      pc <- intersect(tx_ids, as.character(gene_annot_all$tx_id[gene_annot_all$type == "cds"]))
+      if (verbose) message("protein_coding_only: no transcript biotypes for ", version,
+                           "; keeping the transcripts with a CDS.")
+    }
+    if (length(pc)) {
+      gene_annot_all <- gene_annot_all[as.character(gene_annot_all$tx_id) %in% pc]
+      if (verbose) message("protein_coding_only: ", length(pc), " of ", length(tx_ids),
+                           " transcripts kept.")
+    } else {
+      warning("protein_coding_only: no protein-coding transcript for '", gene,
+              "'; showing all transcripts.", call. = FALSE)
     }
   }
 
@@ -1971,21 +2007,24 @@ PolyAPlot <- function(
 
   df<- df[stats::complete.cases(df),]
 
+  # PAS track as high as the peaks track: triangle low, label just above it.
+  pas_y <- if (isTRUE(site_labels)) 0.35 else 0.5
   polyA_plot <- ggplot2::ggplot(df) +
     ggplot2::geom_point(
-      ggplot2::aes(x = start, y = 0.5, fill = Condition, color = Condition),
+      ggplot2::aes(x = start, y = pas_y, fill = Condition, color = Condition),
       size = 2.5,
       shape = 25,
     ) +
     {
       if (isTRUE(site_labels) && "site" %in% colnames(df) && nrow(df) > 0)
         ggplot2::geom_text(
-          ggplot2::aes(x = start, y = 0.68, label = site),
+          ggplot2::aes(x = start, y = pas_y + 0.2, label = site),
           vjust = 0, size = axis_text_size / ggplot2::.pt
         )
     } +
     ggplot2::coord_cartesian(xlim = c(roi_start, roi_end),
-                             ylim = c(0.25, if (isTRUE(site_labels)) 1.05 else 0.75)) +
+                             ylim = c(if (isTRUE(site_labels)) 0.15 else 0.25,
+                                      if (isTRUE(site_labels)) 0.95 else 0.75)) +
     ggplot2::labs(y = "\nPAS") +
     ggplot2::theme_classic() +
     ggplot2::theme(
@@ -1999,6 +2038,13 @@ PolyAPlot <- function(
       legend.title  = ggplot2::element_text(size = legend_title_size)
     )
 
+  # Tracks closer together: small top/bottom margins on every track.
+  trk_margin    <- ggplot2::theme(plot.margin = ggplot2::margin(1, 5.5, 1, 5.5, unit = "pt"))
+  cov_plot_norm <- lapply(cov_plot_norm, function(p) p + trk_margin)
+  polyA_plot    <- polyA_plot + trk_margin
+  peak_plot     <- peak_plot  + trk_margin
+  gene_plot     <- gene_plot  + trk_margin
+
   out <- if (plot_layers == "All") {
     Signac::CombineTracks(
       plotlist = c(
@@ -2009,8 +2055,7 @@ PolyAPlot <- function(
           gene_plot
         )
       ),
-      heights = c(rep(1.6, length(cov_plot_norm)),
-                  if (isTRUE(site_labels)) 0.7 else 0.5, 0.5, 1.5)
+      heights = c(rep(1.6, length(cov_plot_norm)), 0.5, 0.5, 1.5)
     )
   } else {
     Signac::CombineTracks(
