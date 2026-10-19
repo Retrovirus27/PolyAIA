@@ -96,35 +96,7 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
   }
   all_files <- file.path(data_dir, file_names)
   names(all_files) <- gsub(file_pattern, "", file_names)
-  sce <- tryCatch(
-    DropletUtils::read10xCounts(all_files, sample.names = names(all_files), col.names = TRUE),
-    error = function(e) {
-      if (!grepl("gene information differs", conditionMessage(e))) stop(e)
-      # Samples counted with different 10x references (e.g. hg19 and GRCh38):
-      # read each sample on its own and keep the genes (Ensembl ids) shared by
-      # all of them. Column names follow read10xCounts()' multi-sample format
-      # "<sample index>_<barcode>", so the tagging below works unchanged.
-      sce_list <- lapply(seq_along(all_files), function(i) {
-        x <- DropletUtils::read10xCounts(all_files[[i]], sample.names = names(all_files)[i],
-                                         col.names = TRUE)
-        colnames(x) <- paste0(i, "_", SummarizedExperiment::colData(x)$Barcode)
-        x
-      })
-      common <- Reduce(intersect, lapply(sce_list, rownames))
-      if (!length(common)) stop("The samples share no gene ids; check the 10x references.")
-      dropped <- vapply(sce_list, function(x) nrow(x) - length(common), numeric(1))
-      warning("The samples were counted with different gene annotations (10x references). ",
-              "Kept the ", length(common), " genes shared by all samples; dropped per sample: ",
-              paste0(names(all_files), " = ", dropped, collapse = ", "), ".", call. = FALSE)
-      rd <- SummarizedExperiment::rowData(sce_list[[1]])[common, , drop = FALSE]
-      sce_list <- lapply(sce_list, function(x) {
-        x <- x[common, ]
-        SummarizedExperiment::rowData(x) <- rd
-        x
-      })
-      do.call(cbind, sce_list)
-    }
-  )
+  sce <- DropletUtils::read10xCounts(all_files, sample.names = names(all_files), col.names = TRUE)
 
   message("Loaded ", ncol(sce), " cells across ", length(all_files), " samples")
 
