@@ -4,7 +4,10 @@
 \alias{AzimuthAnnotation}
 \title{Cell type annotation with Azimuth}
 \usage{
-AzimuthAnnotation(seurat_obj, reference = c("humancortexref", "mousecortexref"))
+AzimuthAnnotation(
+  seurat_obj,
+  reference = c("humancortexref", "mousecortexref")
+)
 }
 \arguments{
 \item{seurat_obj}{A Seurat object with an RNA assay (counts).}
