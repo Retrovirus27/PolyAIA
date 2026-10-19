@@ -107,6 +107,11 @@
 #' @param gene_col,symbol_col Gene id / symbol columns of the polyA assay
 #'   \code{meta.features}. Defaults \code{"ensembl_gene_id"},
 #'   \code{"Gene_Symbol"}.
+#' @param filterByExpr_args Named list for \code{edgeR::filterByExpr()}
+#'   (applied per site). Default \code{list(min.count = 1,
+#'   min.total.count = 30)}, the adjusted filter used with
+#'   \code{DEPsMatrix()} / PASTA, so all methods start from the same sites.
+#'   \code{list()} = edgeR defaults (10 / 15).
 #' @param min_sites Minimum number of kept sites per gene. Default 1 (every
 #'   gene); 2 keeps the genes where the site structure adds information and
 #'   roughly halves the time.
@@ -130,6 +135,10 @@
 #'   all cores but one.
 #' @param BPPARAM Optional BiocParallel back-end (overrides
 #'   \code{parallel}/\code{ncores}).
+#' @param fit If \code{FALSE}, only build the pseudobulk and apply the filter
+#'   (no APAdeg, seconds): \code{$blocks} gives the sites and genes each block
+#'   would test, to compare \code{filterByExpr_args} settings before a long
+#'   run. Default \code{TRUE}.
 #' @param return_filter If \code{TRUE}, also return the
 #'   \code{\link{PseudobulkFilter}()} object (for \code{\link{QCDensity}()}).
 #'   Default \code{FALSE}.
@@ -149,7 +158,7 @@
 #'       \code{offset_clamped} (not normalised by unpatched APAdeg)}
 #'     \item{\code{disp}}{APAdeg dispersion table per block}
 #'     \item{\code{filter}}{the \code{PseudobulkFilter()} object, when
-#'       \code{return_filter = TRUE}}
+#'       \code{return_filter = TRUE} or \code{fit = FALSE}}
 #'   }
 #'
 #' @seealso \code{\link{CompareDEGs}()}, \code{\link{CompareDEGsPlot}()}
@@ -165,11 +174,19 @@
 #'                          label_col         = "contrast",
 #'                          replicate_col     = "Number",
 #'                          cells             = "L2/3 IT",
-#'                          filterByExpr_args = list(min.count = 1, min.total.count = 30),
 #'                          parallel          = TRUE,
 #'                          ncores            = 8)
 #' apadegs$blocks
 #' head(apadegs$de)
+#'
+#' # Compare filters first (no APAdeg, seconds): sites / genes per block
+#' APAdegsMatrix(seurat_polyA, comparisons, "Subpopulation", "contrast", "Number",
+#'               fit = FALSE)$blocks                                   # default (1 / 30)
+#' APAdegsMatrix(seurat_polyA, comparisons, "Subpopulation", "contrast", "Number",
+#'               filterByExpr_args = list(min.count = 5, min.total.count = 30),
+#'               fit = FALSE)$blocks
+#' APAdegsMatrix(seurat_polyA, comparisons, "Subpopulation", "contrast", "Number",
+#'               filterByExpr_args = list(), fit = FALSE)$blocks       # edgeR defaults
 #' }
 #'
 #' @export
@@ -187,7 +204,7 @@ APAdegsMatrix <- function(seu,
                           min_cells         = 10,
                           filter_method     = c("edgeR", "manual", "none"),
                           mincounts         = 10,
-                          filterByExpr_args = list(),
+                          filterByExpr_args = list(min.count = 1, min.total.count = 30),
                           filter_scope      = c("comparison", "celltype"),
                           min_sites         = 1,
                           max_genes         = NULL,
@@ -199,9 +216,10 @@ APAdegsMatrix <- function(seu,
                           parallel          = FALSE,
                           ncores            = NULL,
                           BPPARAM           = NULL,
+                          fit               = TRUE,
                           return_filter     = FALSE,
                           verbose           = TRUE) {
-  if (!requireNamespace("APAdeg", quietly = TRUE)) {
+  if (isTRUE(fit) && !requireNamespace("APAdeg", quietly = TRUE)) {
     stop("Package 'APAdeg' is required: remotes::install_github('XuLabSJTU/APAdeg')")
   }
   filter_method <- match.arg(filter_method)
@@ -276,7 +294,7 @@ APAdegsMatrix <- function(seu,
 
   # ---- APAdeg offset fix (restored on exit) -----------------------------------
   offset_fixed <- FALSE
-  if (isTRUE(fix_offset)) {
+  if (isTRUE(fit) && isTRUE(fix_offset)) {
     orig <- .PatchAPAdegOffset(verbose = verbose)
     if (!is.null(orig)) {
       offset_fixed <- TRUE
@@ -284,7 +302,7 @@ APAdegsMatrix <- function(seu,
     }
   }
 
-  if (verbose) {
+  if (verbose && isTRUE(fit)) {
     message("Running APAdeg on ", nrow(blocks), " block(s)",
             if (use_bp) paste0(" (", BiocParallel::bpnworkers(BPPARAM), " workers)"), "...")
   }
@@ -323,6 +341,20 @@ APAdegsMatrix <- function(seu,
       gsum     <- gsum[top, , drop = FALSE]
     }
 
+    # fit = FALSE: filter only, report what the block would test
+    if (!isTRUE(fit)) {
+      return(list(block = data.frame(
+        Cells = b$Cells, Condition = b$Condition,
+        n_ctl = sum(is_c), n_trt = sum(!is_c),
+        n_sites_in = b$n_in, n_sites_kept = length(peaks),
+        n_sites = nrow(site_tbl), n_genes = nrow(gsum), n_genes_block = n_all,
+        n_genes_1site = sum(table(site_tbl$gene_id) == 1),
+        median_gene_reads = stats::median(rowSums(gsum)),
+        status = "filter only",
+        stringsAsFactors = FALSE
+      )))
+    }
+
     # size factors APAdeg will use, and the log2FC bias of the clamped offset
     sf   <- .APAdegSizeFactors(gsum)[s$sample]
     bias <- (mean(pmin(0, log(sf[!is_c]))) - mean(pmin(0, log(sf[is_c])))) / log(2)
@@ -355,7 +387,7 @@ APAdegsMatrix <- function(seu,
                         Shrinklfc  = shrink != "none",
                         ShrinkType = shrink)
     }
-    fit <- tryCatch(
+    apa_fit <- tryCatch(
       if (verbose) run_fit() else .QuietOutput(run_fit()),
       error = function(e) {
         warning(sprintf("APAdeg failed for %s | %s: %s",
@@ -366,8 +398,8 @@ APAdegsMatrix <- function(seu,
     secs <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 
     de <- disp <- NULL
-    if (!is.null(fit)) {
-      de <- as.data.frame(fit@APAdegResult) %>%
+    if (!is.null(apa_fit)) {
+      de <- as.data.frame(apa_fit@APAdegResult) %>%
         dplyr::left_join(dplyr::distinct(site_tbl, gene_id, n_sites), by = "gene_id") %>%
         dplyr::transmute(Cells = b$Cells, Condition = b$Condition,
                          group1 = b$control, group2 = b$treatment,
@@ -375,7 +407,7 @@ APAdegsMatrix <- function(seu,
                          n_sites, baseMean, log2FC, pvalue, padj,
                          regulation = ifelse(log2FC > 0, "Up", "Down"),
                          n_tested = nrow(gsum))
-      disp <- as.data.frame(fit@APAdegDispData) %>%
+      disp <- as.data.frame(apa_fit@APAdegDispData) %>%
         dplyr::mutate(Cells = b$Cells, Condition = b$Condition, .before = 1)
     }
 
@@ -398,11 +430,15 @@ APAdegsMatrix <- function(seu,
         minutes  = round(secs / 60, 1),
         offset_bias_log2 = round(bias, 3),
         offset_fixed     = offset_fixed,
-        status   = if (is.null(fit)) "APAdeg failed" else "ok",
+        status   = if (is.null(apa_fit)) "APAdeg failed" else "ok",
         stringsAsFactors = FALSE
       )
     )
   })
+
+  if (!isTRUE(fit)) {
+    return(list(blocks = dplyr::bind_rows(lapply(out, `[[`, "block")), filter = flt))
+  }
 
   res <- list(
     de      = tibble::as_tibble(dplyr::bind_rows(lapply(out, `[[`, "de"))),
