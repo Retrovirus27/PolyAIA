@@ -48,6 +48,8 @@ PolyAPlot(
   usage_sites = c("significant", "all"),
   legend_position = "top",
   site_labels = TRUE,
+  show_stats = TRUE,
+  fdr_col = "PASTA_padj",
   bin_size = 10,
   verbose = TRUE,
   text_size = 12,
@@ -212,16 +214,30 @@ or \code{"column"} (one below the other).}
 
 \item{usage_sites}{\code{"significant"} (default): only the gene's sites in
 \code{deg_list} for the selected cell type / condition(s) -- the ones in
-the PAS track -- are numbered S1..Sn and used for usage, gene
-normalisation and polyA expression. \code{"all"}: every site of the gene
-in \code{polyAdb}.}
+the PAS track -- are labelled (see \code{site_labels}) and used for usage,
+gene normalisation and polyA expression. \code{"all"}: every site of the
+gene in \code{polyAdb}.}
 
 \item{legend_position}{Legend position for the fragment-based tracks
 (\code{"top"}, \code{"bottom"}, \code{"right"}, \code{"none"}...).
 Default \code{"top"}.}
 
-\item{site_labels}{Logical. Label the sites S1, S2, ... (5' to 3') above
-the PAS triangles. Default \code{TRUE}.}
+\item{site_labels}{Logical. Label the sites above the PAS triangles (and in
+the usage panel): \code{p} (proximal) and \code{d} (distal) of the RED
+pair; with more than one pair \code{p1}/\code{d1}, \code{p2}/\code{d2},
+... (pairs ordered 5' to 3'); a site in two pairs gets both labels (e.g.
+\code{d1/p2}); other sites (\code{usage_sites = "all"}) \code{s1},
+\code{s2}, ... Default \code{TRUE}.}
+
+\item{show_stats}{Logical. Title with the gene and, for each RED pair
+shown, the cell type, condition, event type (\code{REDu} = 3' UTR,
+\code{REDi} = intronic), RED and FDR. Default \code{TRUE}.}
+
+\item{fdr_col}{Column of \code{deg_list} shown as FDR. Default
+\code{"PASTA_padj"} (adjusted PASTA p-value, \code{DEPsMatrix(Pasta =
+TRUE)}); if absent or \code{NA} (e.g. \code{Pasta = FALSE}), the first
+available of \code{RED_LRT_padj} / \code{RED_fisher_padj} /
+\code{RED_ttest_padj} is used.}
 
 \item{bin_size}{Bin width (bp) of the fragment-based coverage. Default
 \code{10}.}

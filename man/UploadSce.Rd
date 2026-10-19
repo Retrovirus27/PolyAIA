@@ -18,6 +18,7 @@ UploadSce(
   remove_doublets = TRUE,
   apply_tags = TRUE,
   run_azimuth = TRUE,
+  azimuth_timeout = 3600,
   ncores = 4,
   verbose = TRUE
 )
@@ -56,8 +57,18 @@ Options: \code{"SYMBOL"}, \code{"GENETYPE"}, \code{"ENTREZID"}, \code{"ENZYME"},
 \item{run_azimuth}{Logical. Whether to run Azimuth cell type annotation
 (adds \code{Population}, \code{Population_Score}, \code{Subpopulation},
 \code{Subpopulation_Score}). Broader groupings (e.g. a \code{CellType}
-column) are left to the user. If Azimuth fails, the pipeline continues
-without these columns rather than aborting. Default \code{TRUE}}
+column) are left to the user. Azimuth needs internet access to
+\code{seurat.nygenome.org}: the reference (a SeuratData package,
+installed once) and a gene-name table downloaded on every run (to convert
+Ensembl ids to the reference's symbols). The reference is checked, and
+installed if missing, before loading the data, so a download problem
+stops the function right away. If the mapping itself fails, the pipeline
+continues without these columns and warns with the reason.
+Default \code{TRUE}}
+
+\item{azimuth_timeout}{Seconds allowed for the Azimuth downloads (reference
+install and gene-name table). Default 3600 (R's default, 60, is too
+short for the reference).}
 
 \item{ncores}{Integer. Number of cores for parallel processing during doublet detection. Default \code{4}}
 
