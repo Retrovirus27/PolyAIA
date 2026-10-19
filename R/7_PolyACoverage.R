@@ -182,6 +182,13 @@
     data.frame(xmin = IRanges::start(highlight), xmax = IRanges::end(highlight))
   } else NULL
 
+  # legend_position = "axis" (overlay): the legend sits between the y axis and
+  # the panel, vertical -- where the group labels are without overlay -- so the
+  # tracks keep that left space (the gene track's transcript names use it).
+  legend_axis <- isTRUE(overlay) && identical(legend_position, "axis")
+  if (identical(legend_position, "axis") && !legend_axis) legend_position <- "top"
+  key_pt <- 10
+
   plots <- lapply(names(tracks), function(tr) {
     d  <- sig[sig$track == tr, , drop = FALSE]
     dr <- if (!is.null(sig_rep)) sig_rep[sig_rep$track == tr, , drop = FALSE] else NULL
@@ -232,13 +239,42 @@
         panel.spacing.y   = ggplot2::unit(0, "lines"),
         # legend shown when groups share a panel (overlay) or when the usage
         # panel needs it; the usage panel itself has no legend
-        legend.position   = if (isTRUE(overlay) || isTRUE(usage_panel) || isTRUE(expression_panel))
-                              legend_position else "none",
+        legend.position   = if (legend_axis) "none" else
+                              if (isTRUE(overlay) || isTRUE(usage_panel) || isTRUE(expression_panel))
+                                legend_position else "none",
         # vertical when the legend sits at the side (left/right)
         legend.direction  = if (is.character(legend_position) &&
                                 legend_position[1] %in% c("left", "right")) "vertical" else "horizontal",
         legend.text       = ggplot2::element_text(size = legend_text_size)
       )
+    if (legend_axis) {
+      # A left strip (inside, between axis and panel, like the group labels
+      # without overlay) with the group names in transparent text reserves the
+      # space; the legend is drawn on it, right-aligned to the panel edge.
+      d$.legend_space <- paste(levels(droplevels(d$group)), collapse = "\n")
+      p$data <- d
+      leg_pos <- if (utils::packageVersion("ggplot2") >= "3.5.0") {
+        ggplot2::theme(legend.position = "inside", legend.position.inside = c(0, 0.5))
+      } else {
+        ggplot2::theme(legend.position = c(0, 0.5))
+      }
+      p <- p +
+        ggplot2::facet_wrap(ggplot2::vars(.data$.legend_space), strip.position = "left") +
+        ggplot2::theme(
+          strip.placement   = "inside",
+          strip.background  = ggplot2::element_blank(),
+          strip.text.y.left = ggplot2::element_text(
+            angle = 0, hjust = 0, size = legend_text_size, colour = "transparent",
+            margin = ggplot2::margin(0, 3, 0, key_pt + 12, unit = "pt")),
+          legend.justification = c(1, 0.5),
+          legend.direction     = "vertical",
+          legend.key.size      = ggplot2::unit(key_pt, "pt"),
+          legend.margin        = ggplot2::margin(0, 3, 0, 3, unit = "pt"),
+          legend.background    = ggplot2::element_blank(),
+          legend.text          = ggplot2::element_text(size = legend_text_size)
+        ) +
+        leg_pos
+    }
     if (!isTRUE(overlay)) {
       # Exactly Signac's CoverageTrack look (theme_browser): theme_classic at
       # its default size, group names as left strips inside the axis (fixed

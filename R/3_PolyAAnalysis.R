@@ -1052,12 +1052,13 @@ PolyAPipeline <- function(seurat_obj,
 #'   or \code{"column"} (one below the other).
 #' @param bulk_title Logical. Show the "Bulk" title on the bulk track.
 #'   Default \code{FALSE}.
-#' @param legend_position Legend position for the fragment-based tracks
-#'   (\code{"left"}, \code{"top"}, \code{"bottom"}, \code{"right"},
-#'   \code{"none"}...). \code{NULL} (default): \code{"left"} (vertical) with
-#'   \code{overlay = TRUE} -- it keeps the left space the group labels take
-#'   without overlay, which the transcript names of the gene track need --
-#'   and \code{"top"} otherwise.
+#' @param legend_position Legend position for the fragment-based tracks:
+#'   \code{"axis"} (overlay only: vertical, between the y axis and the
+#'   coverage, where the group labels are without overlay, so the tracks keep
+#'   that left space for the transcript names), \code{"top"},
+#'   \code{"bottom"}, \code{"left"}, \code{"right"}, \code{"none"}...
+#'   \code{NULL} (default): \code{"axis"} with \code{overlay = TRUE},
+#'   \code{"top"} otherwise.
 #' @param site_labels Logical. Label the sites above the PAS triangles (and in
 #'   the usage panel): \code{p} (proximal) and \code{d} (distal) of the RED
 #'   pair; with more than one pair \code{p1}/\code{d1}, \code{p2}/\code{d2},
@@ -1176,9 +1177,10 @@ PolyAPlot <- function(
     if (verbose) message("Coverage built from fragments: using normalize = \"counts\".")
     normalize <- "counts"
   }
-  # Overlay: legend on the left (vertical), in the space the group labels take
-  # without overlay, so the gene track keeps room for the transcript names.
-  if (is.null(legend_position)) legend_position <- if (isTRUE(overlay)) "left" else "top"
+  # Overlay: legend between the y axis and the coverage (vertical), in the
+  # space the group labels take without overlay, so the gene track keeps room
+  # for the transcript names.
+  if (is.null(legend_position)) legend_position <- if (isTRUE(overlay)) "axis" else "top"
   usage_type <- match.arg(usage_type)
   expression_source <- match.arg(expression_source)
   usage_scale       <- match.arg(usage_scale)
