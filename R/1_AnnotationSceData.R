@@ -267,6 +267,13 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
       }
     }
 
+    # RunAzimuth sends large objects to future workers; with big datasets they
+    # exceed future's default 500 MiB limit ("future.globals.maxSize") and the
+    # mapping fails. Raise it to at least 8000 MiB for this call only.
+    old_future <- options(future.globals.maxSize =
+                            max(8000 * 1024^2, getOption("future.globals.maxSize", 0)))
+    on.exit(options(old_future), add = TRUE)
+
     seurat_obj <- tryCatch({
       seurat_obj_dummy <- Azimuth::RunAzimuth(seurat_obj, reference = reference)
 
@@ -280,6 +287,7 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
 
       seurat_obj
     }, error = function(e) {
+      message("Azimuth annotation FAILED: ", conditionMessage(e))
       warning("Azimuth annotation failed and was skipped -- Population/Subpopulation ",
               "will be absent from metadata.\n  Reason: ", conditionMessage(e))
       seurat_obj
