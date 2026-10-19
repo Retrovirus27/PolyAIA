@@ -46,7 +46,7 @@ PolyAPlot(
   usage_scale = c("percent", "cpm"),
   panels_layout = c("row", "column"),
   usage_sites = c("significant", "all"),
-  legend_position = "top",
+  legend_position = NULL,
   site_labels = TRUE,
   show_stats = TRUE,
   fdr_col = "PASTA_padj",
@@ -218,9 +218,13 @@ the PAS track -- are labelled (see \code{site_labels}) and used for usage,
 gene normalisation and polyA expression. \code{"all"}: every site of the
 gene in \code{polyAdb}.}
 
-\item{legend_position}{Legend position for the fragment-based tracks
-(\code{"top"}, \code{"bottom"}, \code{"right"}, \code{"none"}...).
-Default \code{"top"}.}
+\item{legend_position}{Legend position for the fragment-based tracks:
+\code{"axis"} (overlay only: vertical, between the y axis and the
+coverage, where the group labels are without overlay, so the tracks keep
+that left space for the transcript names), \code{"top"},
+\code{"bottom"}, \code{"left"}, \code{"right"}, \code{"none"}...
+\code{NULL} (default): \code{"axis"} with \code{overlay = TRUE},
+\code{"top"} otherwise.}
 
 \item{site_labels}{Logical. Label the sites above the PAS triangles (and in
 the usage panel): \code{p} (proximal) and \code{d} (distal) of the RED
@@ -229,9 +233,12 @@ pair; with more than one pair \code{p1}/\code{d1}, \code{p2}/\code{d2},
 \code{d1/p2}); other sites (\code{usage_sites = "all"}) \code{s1},
 \code{s2}, ... Default \code{TRUE}.}
 
-\item{show_stats}{Logical. Title with the gene and, for each RED pair
-shown, the cell type, condition, event type (\code{REDu} = 3' UTR,
-\code{REDi} = intronic), RED and FDR. Default \code{TRUE}.}
+\item{show_stats}{Logical. Centred title \code{"<cell type> - <gene>"} and
+one line per RED pair shown with the event type, RED and FDR, e.g.
+\code{"Intronic APA | REDi = -0.45, FDR = 0.001"} or
+\code{"3' UTR APA | REDu = 0.30, FDR = 0.02"}. The cell type, condition
+and pair labels (\code{p1-d1}) are added to the lines only when the plot
+shows more than one of them. Default \code{TRUE}.}
 
 \item{fdr_col}{Column of \code{deg_list} shown as FDR. Default
 \code{"PASTA_padj"} (adjusted PASTA p-value, \code{DEPsMatrix(Pasta =
