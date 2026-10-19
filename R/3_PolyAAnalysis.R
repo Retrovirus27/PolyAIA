@@ -1064,6 +1064,12 @@ PolyAPipeline <- function(seurat_obj,
 #'   \code{"bottom"}, \code{"left"}, \code{"right"}, \code{"none"}...
 #'   \code{NULL} (default): \code{"axis"} with \code{overlay = TRUE},
 #'   \code{"top"} otherwise.
+#' @param left_space Blank space added on the left of every track, as a
+#'   fraction of the region width (the coverage is drawn a bit narrower), so
+#'   the transcript names, drawn just right of the axis, do not overlap the
+#'   transcripts. \code{NULL} (default): 0.12 with the fragment-based
+#'   coverage (\code{dedup_umi}, \code{normalize}, \code{overlay}...), 0 with
+#'   the Signac coverage.
 #' @param protein_coding_only Logical. Show only the protein-coding
 #'   transcripts in the gene track (transcript biotype from the EnsDb of
 #'   \code{version}: hg38 = v86, hg19 = v75, mm10 = v79; without it, the
@@ -1155,6 +1161,7 @@ PolyAPlot <- function(
     panels_layout     = c("row", "column"),
     usage_sites       = c("significant", "all"),
     legend_position = NULL,
+    left_space      = NULL,
     protein_coding_only = FALSE,
     site_labels     = TRUE,
     show_stats      = TRUE,
@@ -1641,6 +1648,12 @@ PolyAPlot <- function(
   }
 
   # Create plots
+  # Blank space on the left of every track (fragment-based coverage): the
+  # tracks are drawn a bit narrower so the transcript names, just right of the
+  # axis, don't overlap the transcripts. Same x limits for all tracks.
+  if (is.null(left_space)) left_space <- if (use_fragments) 0.12 else 0
+  xlim_plot <- c(roi_start - left_space * (roi_end - roi_start), roi_end)
+
   gene_plot <- plot_annotation_from_granges(
     gene = gene,
     gene_annot_all  = gene_annot_all,
@@ -1648,9 +1661,7 @@ PolyAPlot <- function(
     text_size       = text_size,
     axis_text_size  = axis_text_size,
     axis_title_size = axis_title_size,
-    # fragment-based coverage: transcript names to the left of the axis, so
-    # they never overlap the transcripts (Signac coverage: as before)
-    name_margin     = if (use_fragments) 4 else -80
+    xlim            = xlim_plot
   )
 
   # Check version
@@ -2015,7 +2026,7 @@ PolyAPlot <- function(
   polyA_plot <- ggplot2::ggplot(df) +
     ggplot2::geom_point(
       ggplot2::aes(x = start, y = pas_y, fill = Condition, color = Condition),
-      size = 2.5,
+      size = 1.8,
       shape = 25,
     ) +
     {
@@ -2025,7 +2036,7 @@ PolyAPlot <- function(
           vjust = 0, size = axis_text_size / ggplot2::.pt
         )
     } +
-    ggplot2::coord_cartesian(xlim = c(roi_start, roi_end),
+    ggplot2::coord_cartesian(xlim = xlim_plot,
                              ylim = c(if (isTRUE(site_labels)) 0.15 else 0.25,
                                       if (isTRUE(site_labels)) 0.95 else 0.75)) +
     ggplot2::labs(y = "\nPAS") +
@@ -2044,7 +2055,18 @@ PolyAPlot <- function(
   # Spacing: coverage and gene tracks with a small margin; PAS and peaks
   # (thin tracks) with none, so they sit close to each other.
   trk_margin    <- ggplot2::theme(plot.margin = ggplot2::margin(3, 5.5, 3, 5.5, unit = "pt"))
-  thin_margin   <- ggplot2::theme(plot.margin = ggplot2::margin(0, 5.5, 0, 5.5, unit = "pt"))
+  thin_margin   <- ggplot2::theme(plot.margin = ggplot2::margin(2, 5.5, 2, 5.5, unit = "pt"))
+  # thinner peak bars (Signac::PeakPlot draws them with size 2)
+  for (l in peak_plot$layers) {
+    if (!is.null(l$aes_params$linewidth)) l$aes_params$linewidth <- l$aes_params$linewidth / 2
+    if (!is.null(l$aes_params$size))      l$aes_params$size      <- l$aes_params$size / 2
+  }
+  # same x limits (with the left space) on the coverage and peaks tracks
+  if (left_space > 0) {
+    xl <- ggplot2::coord_cartesian(xlim = xlim_plot)
+    cov_plot_norm <- lapply(cov_plot_norm, function(p) suppressMessages(p + xl))
+    peak_plot     <- suppressMessages(peak_plot + xl)
+  }
   cov_plot_norm <- lapply(cov_plot_norm, function(p) p + trk_margin)
   polyA_plot    <- polyA_plot + thin_margin
   peak_plot     <- peak_plot  + thin_margin
@@ -2158,6 +2180,8 @@ PolyAPlot <- function(
 #' @param name_margin Right margin (pt) of the transcript names. Negative
 #'   values draw them over the left part of the panel; positive values keep
 #'   them left of the axis. Default \code{-80}.
+#' @param xlim x limits of the panel (to match the other tracks). \code{NULL}
+#'   (default): the region.
 #'
 #' @return A \code{ggplot2} object with the gene annotation track
 #'
@@ -2171,7 +2195,8 @@ plot_annotation_from_granges <- function(
     axis_text_size  = 10,
     axis_name_size  = 6,
     axis_title_size = 12,
-    name_margin     = -80
+    name_margin     = -80,
+    xlim            = NULL
 ) {
 
   # Convert to df and filter to roi
@@ -2256,7 +2281,8 @@ plot_annotation_from_granges <- function(
       show.legend = FALSE
     ) +
     ggplot2::scale_linewidth_identity() +
-    ggplot2::coord_cartesian(xlim = c(roi_start, roi_end), ylim = c(0, max(backbone_df$y) + 1)) +
+    ggplot2::coord_cartesian(xlim = if (is.null(xlim)) c(roi_start, roi_end) else xlim,
+                             ylim = c(0, max(backbone_df$y) + 1)) +
     ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = 0.05)) +
     #ggplot2::scale_x_continuous(expand = c(0, 0)) +
     ggplot2::scale_y_continuous(breaks = backbone_df$y, labels = backbone_df$tx_id,) +

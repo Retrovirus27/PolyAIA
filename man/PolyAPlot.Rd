@@ -47,6 +47,7 @@ PolyAPlot(
   panels_layout = c("row", "column"),
   usage_sites = c("significant", "all"),
   legend_position = NULL,
+  left_space = NULL,
   protein_coding_only = FALSE,
   site_labels = TRUE,
   show_stats = TRUE,
@@ -231,6 +232,13 @@ that left space for the transcript names), \code{"top"},
 \code{"bottom"}, \code{"left"}, \code{"right"}, \code{"none"}...
 \code{NULL} (default): \code{"axis"} with \code{overlay = TRUE},
 \code{"top"} otherwise.}
+
+\item{left_space}{Blank space added on the left of every track, as a
+fraction of the region width (the coverage is drawn a bit narrower), so
+the transcript names, drawn just right of the axis, do not overlap the
+transcripts. \code{NULL} (default): 0.12 with the fragment-based
+coverage (\code{dedup_umi}, \code{normalize}, \code{overlay}...), 0 with
+the Signac coverage.}
 
 \item{protein_coding_only}{Logical. Show only the protein-coding
 transcripts in the gene track (transcript biotype from the EnsDb of

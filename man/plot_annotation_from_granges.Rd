@@ -12,7 +12,8 @@ plot_annotation_from_granges(
   axis_text_size = 10,
   axis_name_size = 6,
   axis_title_size = 12,
-  name_margin = -80
+  name_margin = -80,
+  xlim = NULL
 )
 }
 \arguments{
@@ -35,6 +36,9 @@ interest to plot}
 \item{name_margin}{Right margin (pt) of the transcript names. Negative
 values draw them over the left part of the panel; positive values keep
 them left of the axis. Default \code{-80}.}
+
+\item{xlim}{x limits of the panel (to match the other tracks). \code{NULL}
+(default): the region.}
 }
 \value{
 A \code{ggplot2} object with the gene annotation track
