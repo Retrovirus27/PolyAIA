@@ -51,7 +51,8 @@
 #' @param group_levels Order of the groups.
 #' @param rep_of Named character vector: cell -> replicate, or \code{NULL}.
 #' @param sites \code{data.frame(site, peak, start, end)} of the gene's sites,
-#'   labelled S1..Sn from 5' to 3'.
+#'   ordered 5' to 3' and labelled p/d (p1/d1, p2/d2... with several RED
+#'   pairs; other sites s1, s2...).
 #' @param highlight \code{GRanges} of regions to shade, or \code{NULL}.
 #' @return list(plots, usage_plot, usage, usage_rep, summary)
 #' @noRd

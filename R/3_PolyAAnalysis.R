@@ -1041,9 +1041,9 @@ PolyAPipeline <- function(seurat_obj,
 #'   \code{"cpm"} (log2(CPM + 1) per site) for the usage panel.
 #' @param usage_sites \code{"significant"} (default): only the gene's sites in
 #'   \code{deg_list} for the selected cell type / condition(s) -- the ones in
-#'   the PAS track -- are numbered S1..Sn and used for usage, gene
-#'   normalisation and polyA expression. \code{"all"}: every site of the gene
-#'   in \code{polyAdb}.
+#'   the PAS track -- are labelled (see \code{site_labels}) and used for usage,
+#'   gene normalisation and polyA expression. \code{"all"}: every site of the
+#'   gene in \code{polyAdb}.
 #' @param expression_panel Logical. Side panel with the gene's expression,
 #'   log2(CPM + 1) per group. Default \code{FALSE}.
 #' @param expression_source \code{"RNA"} (gene counts in the RNA assay,
@@ -1055,8 +1055,18 @@ PolyAPipeline <- function(seurat_obj,
 #' @param legend_position Legend position for the fragment-based tracks
 #'   (\code{"top"}, \code{"bottom"}, \code{"right"}, \code{"none"}...).
 #'   Default \code{"top"}.
-#' @param site_labels Logical. Label the sites S1, S2, ... (5' to 3') above
-#'   the PAS triangles. Default \code{TRUE}.
+#' @param site_labels Logical. Label the sites above the PAS triangles (and in
+#'   the usage panel): \code{p} (proximal) and \code{d} (distal) of the RED
+#'   pair; with more than one pair \code{p1}/\code{d1}, \code{p2}/\code{d2},
+#'   ... (pairs ordered 5' to 3'); a site in two pairs gets both labels (e.g.
+#'   \code{d1/p2}); other sites (\code{usage_sites = "all"}) \code{s1},
+#'   \code{s2}, ... Default \code{TRUE}.
+#' @param show_stats Logical. Title with the gene and, for each RED pair
+#'   shown, the cell type, condition, event type (\code{REDu} = 3' UTR,
+#'   \code{REDi} = intronic), RED and FDR. Default \code{TRUE}.
+#' @param fdr_col Column of \code{deg_list} shown as FDR. Default
+#'   \code{"RED_LRT_padj"}; if absent or \code{NA}, the first available of
+#'   \code{RED_fisher_padj} / \code{RED_ttest_padj} is used.
 #' @param bin_size Bin width (bp) of the fragment-based coverage. Default
 #'   \code{10}.
 #' @param verbose Logical. Whether to print progress messages. Default \code{TRUE}
@@ -1128,6 +1138,8 @@ PolyAPlot <- function(
     usage_sites       = c("significant", "all"),
     legend_position = "top",
     site_labels     = TRUE,
+    show_stats      = TRUE,
+    fdr_col         = "RED_LRT_padj",
     bin_size        = 10,
     verbose         = TRUE,
     text_size       = 12,
@@ -1502,12 +1514,34 @@ PolyAPlot <- function(
   polyA_gene <- polyA_gene %>%
     dplyr::left_join(peak_conditions, by = "peak")
 
-  # Label the sites S1..Sn from 5' to 3' (S1 = most proximal). Used above the
+  # RED pairs shown (selected cell type / condition(s)), ordered 5' to 3' by
+  # the proximal then the distal site. One pair -> "p" / "d"; more pairs ->
+  # "p1"/"d1", "p2"/"d2", ...; a site in two pairs gets both ("d1/p2").
+  pair_tbl <- results[!is.na(results$p_peak) & !is.na(results$d_peak), , drop = FALSE]
+  pair_tbl <- pair_tbl[!duplicated(paste(pair_tbl$p_peak, pair_tbl$d_peak)), , drop = FALSE]
+  if (nrow(pair_tbl) > 0) {
+    minus <- identical(as.character(pair_tbl$strand[1]), "-")
+    pair_tbl <- pair_tbl[order(if (minus) -pair_tbl$p_pos else pair_tbl$p_pos,
+                               if (minus) -pair_tbl$d_pos else pair_tbl$d_pos), , drop = FALSE]
+  }
+  n_pairs <- nrow(pair_tbl)
+  pair_tbl$p_lab <- if (n_pairs == 1) "p" else paste0("p", seq_len(n_pairs))
+  pair_tbl$d_lab <- if (n_pairs == 1) "d" else paste0("d", seq_len(n_pairs))
+  lab_long <- data.frame(peak = c(pair_tbl$p_peak, pair_tbl$d_peak),
+                         lab  = c(pair_tbl$p_lab,  pair_tbl$d_lab),
+                         stringsAsFactors = FALSE)
+  peak_lab <- vapply(split(lab_long$lab, lab_long$peak), function(v) {
+    v <- unique(v)
+    paste(v[order(suppressWarnings(as.integer(sub("^[pd]", "", v))))], collapse = "/")
+  }, character(1))
+
+  # Label the sites (p/d, see above) and rank them 5' to 3'. Used above the
   # PAS triangles and in the site-usage / expression calculations.
   #   usage_sites = "significant": only the gene's p_peak/d_peak sites for the
-  #     selected cell type and condition(s) -- numbered and
+  #     selected cell type and condition(s) -- labelled and
   #     used for usage %, gene normalisation and polyA expression.
-  #   usage_sites = "all": every site of the gene in polyAdb.
+  #   usage_sites = "all": every site of the gene in polyAdb; sites outside the
+  #     RED pairs are "s1", "s2", ...
   if (nrow(polyA_gene) > 0) {
     # "significant" = the sites of THIS gene's rows for the selected cell type
     # and condition(s) (`results`, which also defines the plotted region) --
@@ -1520,7 +1554,12 @@ PolyAPlot <- function(
     ord <- idx[order(if (identical(site_strand, "-")) -polyA_gene$hg38_Position[idx]
                      else polyA_gene$hg38_Position[idx])]
     polyA_gene$site <- NA_character_
-    polyA_gene$site[ord] <- paste0("S", seq_along(ord))
+    polyA_gene$site_rank <- NA_integer_
+    polyA_gene$site_rank[ord] <- seq_along(ord)
+    lab <- unname(peak_lab[as.character(polyA_gene$peak[ord])])
+    other <- is.na(lab)
+    lab[other] <- paste0("s", seq_len(sum(other)))
+    polyA_gene$site[ord] <- lab
   }
 
   if (nrow(polyA_gene) == 0) {
@@ -1728,7 +1767,7 @@ PolyAPlot <- function(
       s_end    <- if ("end"   %in% colnames(sites_gene)) sites_gene$end   else as.integer(pk_parts[, 3])
       data.frame(site = sites_gene$site, peak = sites_gene$peak,
                  start = s_start, end = s_end,
-                 stringsAsFactors = FALSE)[order(as.integer(sub("^S", "", sites_gene$site))), ]
+                 stringsAsFactors = FALSE)[order(sites_gene$site_rank), ]
     } else {
       data.frame(site = character(0), peak = character(0), start = integer(0), end = integer(0))
     }
@@ -1969,6 +2008,37 @@ PolyAPlot <- function(
              if (!is.null(cov_extra$expr_plot)) 0.15 + 0.2 * n_grp)
       out <- patchwork::wrap_plots(c(list(out), side), nrow = 1, widths = w)
     }
+  }
+
+  # Title: gene + one line per RED pair shown (cell type | condition | event:
+  # labels, RED, FDR).
+  if (isTRUE(show_stats) && n_pairs > 0) {
+    st <- results[!is.na(results$p_peak) & !is.na(results$d_peak), , drop = FALSE]
+    pk <- match(paste(st$p_peak, st$d_peak), paste(pair_tbl$p_peak, pair_tbl$d_peak))
+    fdr_try <- unique(c(fdr_col, "RED_LRT_padj", "RED_fisher_padj", "RED_ttest_padj"))
+    fdr_use <- fdr_try[fdr_try %in% colnames(st)]
+    fdr_use <- fdr_use[vapply(fdr_use, function(cl) any(!is.na(st[[cl]])), logical(1))][1]
+    fdr_txt <- if (is.na(fdr_use)) "NA" else formatC(st[[fdr_use]], format = "g", digits = 2)
+    fdr_name <- if (is.na(fdr_use)) "FDR" else
+      paste0("FDR (", sub("^RED_(.*)_padj$", "\\1", fdr_use), ")")
+    ev <- if ("RED_type" %in% colnames(st)) {
+      paste0(st$RED_type, ifelse(st$RED_type == "REDi", " (intronic)", " (3' UTR)"))
+    } else "RED"
+    ct   <- if ("Cells" %in% colnames(st)) as.character(st$Cells) else rep("", nrow(st))
+    cond <- if ("Condition" %in% colnames(st)) as.character(st$Condition) else rep("", nrow(st))
+    lines <- paste0(ct, " | ", cond, " | ", ev, "  ",
+                    pair_tbl$p_lab[pk], " \u2192 ", pair_tbl$d_lab[pk],
+                    ":  RED = ", formatC(st$RED, format = "f", digits = 2),
+                    ",  ", fdr_name, " = ", fdr_txt)
+    lines <- unique(lines[order(ct, cond, pk)])
+    out <- out + patchwork::plot_annotation(
+      title    = gene,
+      subtitle = paste(lines, collapse = "\n"),
+      theme    = ggplot2::theme(
+        plot.title    = ggplot2::element_text(size = text_size + 2, face = "bold.italic"),
+        plot.subtitle = ggplot2::element_text(size = text_size - 1)
+      )
+    )
   }
 
   out
