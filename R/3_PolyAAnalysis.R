@@ -1647,7 +1647,10 @@ PolyAPlot <- function(
     roi_expanded    = roi_expanded,
     text_size       = text_size,
     axis_text_size  = axis_text_size,
-    axis_title_size = axis_title_size
+    axis_title_size = axis_title_size,
+    # fragment-based coverage: transcript names to the left of the axis, so
+    # they never overlap the transcripts (Signac coverage: as before)
+    name_margin     = if (use_fragments) 4 else -80
   )
 
   # Check version
@@ -2038,12 +2041,24 @@ PolyAPlot <- function(
       legend.title  = ggplot2::element_text(size = legend_title_size)
     )
 
-  # Tracks closer together: small top/bottom margins on every track.
-  trk_margin    <- ggplot2::theme(plot.margin = ggplot2::margin(1, 5.5, 1, 5.5, unit = "pt"))
+  # Spacing: coverage and gene tracks with a small margin; PAS and peaks
+  # (thin tracks) with none, so they sit close to each other.
+  trk_margin    <- ggplot2::theme(plot.margin = ggplot2::margin(3, 5.5, 3, 5.5, unit = "pt"))
+  thin_margin   <- ggplot2::theme(plot.margin = ggplot2::margin(0, 5.5, 0, 5.5, unit = "pt"))
   cov_plot_norm <- lapply(cov_plot_norm, function(p) p + trk_margin)
-  polyA_plot    <- polyA_plot + trk_margin
-  peak_plot     <- peak_plot  + trk_margin
+  polyA_plot    <- polyA_plot + thin_margin
+  peak_plot     <- peak_plot  + thin_margin
   gene_plot     <- gene_plot  + trk_margin
+  # Fragment-based coverage: more room between the track names (y titles)
+  # and the axes.
+  if (use_fragments) {
+    title_room    <- ggplot2::theme(axis.title.y = ggplot2::element_text(
+      size = axis_title_size, margin = ggplot2::margin(r = 8, unit = "pt")))
+    cov_plot_norm <- lapply(cov_plot_norm, function(p) p + title_room)
+    polyA_plot    <- polyA_plot + title_room
+    peak_plot     <- peak_plot  + title_room
+    gene_plot     <- gene_plot  + title_room
+  }
 
   out <- if (plot_layers == "All") {
     Signac::CombineTracks(
@@ -2055,7 +2070,7 @@ PolyAPlot <- function(
           gene_plot
         )
       ),
-      heights = c(rep(1.6, length(cov_plot_norm)), 0.5, 0.5, 1.5)
+      heights = c(rep(1.6, length(cov_plot_norm)), 0.35, 0.35, 1.5)
     )
   } else {
     Signac::CombineTracks(
@@ -2140,6 +2155,9 @@ PolyAPlot <- function(
 #' @param axis_text_size Numeric. Text size for axis tick labels. Default \code{12}
 #' @param axis_name_size Numeric. Text size for gene/feature name labels. Default \code{6}
 #' @param axis_title_size Numeric. Text size for axis titles. Default \code{14}
+#' @param name_margin Right margin (pt) of the transcript names. Negative
+#'   values draw them over the left part of the panel; positive values keep
+#'   them left of the axis. Default \code{-80}.
 #'
 #' @return A \code{ggplot2} object with the gene annotation track
 #'
@@ -2152,7 +2170,8 @@ plot_annotation_from_granges <- function(
     text_size       = 12,
     axis_text_size  = 10,
     axis_name_size  = 6,
-    axis_title_size = 12
+    axis_title_size = 12,
+    name_margin     = -80
 ) {
 
   # Convert to df and filter to roi
@@ -2246,7 +2265,7 @@ plot_annotation_from_granges <- function(
     ggplot2::theme_classic(base_size = text_size) +
     ggplot2::theme(
       axis.ticks.y = ggplot2::element_blank(),
-      axis.text.y  = ggplot2::element_text(size = axis_name_size, hjust = 1, vjust = 0.25, margin = ggplot2::margin(r = -80)),
+      axis.text.y  = ggplot2::element_text(size = axis_name_size, hjust = 1, vjust = 0.25, margin = ggplot2::margin(r = name_margin)),
       axis.text.x  = ggplot2::element_blank(),
       axis.title.x = ggplot2::element_blank(),
       axis.ticks.x = ggplot2::element_blank(),

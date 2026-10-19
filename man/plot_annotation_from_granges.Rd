@@ -11,7 +11,8 @@ plot_annotation_from_granges(
   text_size = 12,
   axis_text_size = 10,
   axis_name_size = 6,
-  axis_title_size = 12
+  axis_title_size = 12,
+  name_margin = -80
 )
 }
 \arguments{
@@ -30,6 +31,10 @@ interest to plot}
 \item{axis_name_size}{Numeric. Text size for gene/feature name labels. Default \code{6}}
 
 \item{axis_title_size}{Numeric. Text size for axis titles. Default \code{14}}
+
+\item{name_margin}{Right margin (pt) of the transcript names. Negative
+values draw them over the left part of the panel; positive values keep
+them left of the axis. Default \code{-80}.}
 }
 \value{
 A \code{ggplot2} object with the gene annotation track
