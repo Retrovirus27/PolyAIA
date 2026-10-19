@@ -76,7 +76,9 @@ Suggests:
     clustree,
     ggraph,
     Libra,
-    APAdeg
+    APAdeg,
+    SeuratData
 Remotes:
     neurorestore/Libra,
-    XuLabSJTU/APAdeg
+    XuLabSJTU/APAdeg,
+    satijalab/seurat-data

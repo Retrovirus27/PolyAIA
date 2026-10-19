@@ -37,8 +37,11 @@
 #' @param run_azimuth Logical. Whether to run Azimuth cell type annotation
 #'   (adds \code{Population}, \code{Population_Score}, \code{Subpopulation},
 #'   \code{Subpopulation_Score}). Broader groupings (e.g. a \code{CellType}
-#'   column) are left to the user. If Azimuth fails, the pipeline continues
-#'   without these columns rather than aborting. Default \code{TRUE}
+#'   column) are left to the user. The reference is checked (and installed
+#'   if missing) before loading the data, so a download problem stops the
+#'   function right away. If the mapping itself fails, the pipeline continues
+#'   without these columns and warns with the reason; annotate later with
+#'   \code{\link{AzimuthAnnotation}()}. Default \code{TRUE}
 #' @param ncores Integer. Number of cores for parallel processing during doublet detection. Default \code{4}
 #' @param verbose Logical. Whether to print progress messages. Default \code{TRUE}
 #'
@@ -79,6 +82,16 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
   if (isTRUE(run_azimuth) && !requireNamespace("Azimuth", quietly = TRUE)) {
     stop("Package 'Azimuth' is required when run_azimuth = TRUE. ",
          "Install with: remotes::install_github('satijalab/azimuth')")
+  }
+  # Make sure the Azimuth reference is installed BEFORE the long steps (it is
+  # a large download from seurat.nygenome.org the first time; R's default
+  # 60 s timeout is not enough), so a download problem shows up right away.
+  if (isTRUE(run_azimuth)) {
+    ok <- .EnsureAzimuthReference(reference, timeout = 3600, verbose = verbose)
+    if (!isTRUE(ok)) {
+      stop(ok, "\n  Or run UploadSce(run_azimuth = FALSE) and annotate later with ",
+           "AzimuthAnnotation().", call. = FALSE)
+    }
   }
 
   # Validate inputs early with clear, actionable messages
@@ -255,35 +268,7 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
 
   # Run Azimuth cell type annotation
   if (run_azimuth) {
-    message("Running Azimuth annotation with ", reference, "...")
-
-    # Azimuth internally calls some SeuratObject/Seurat generics (e.g. `Key<-`)
-    # unqualified, assuming they've been attached via library() rather than
-    # accessed via `::`. Since this package only Imports them, attach them to
-    # the search path here (if not already) so RunAzimuth can find them.
-    for (pkg in c("SeuratObject", "Seurat")) {
-      if (!paste0("package:", pkg) %in% search() && requireNamespace(pkg, quietly = TRUE)) {
-        suppressPackageStartupMessages(attachNamespace(pkg))
-      }
-    }
-
-    seurat_obj <- tryCatch({
-      seurat_obj_dummy <- Azimuth::RunAzimuth(seurat_obj, reference = reference)
-
-      # Rename Azimuth predictions to standardized names
-      seurat_obj$Population <- seurat_obj_dummy$predicted.class[match(seurat_obj_dummy$row_names, seurat_obj$row_names)]
-      seurat_obj$Population_Score <- seurat_obj_dummy$predicted.class.score[match(seurat_obj_dummy$row_names, seurat_obj$row_names)]
-      seurat_obj$Subpopulation <- seurat_obj_dummy$predicted.subclass[match(seurat_obj_dummy$row_names, seurat_obj$row_names)]
-      seurat_obj$Subpopulation_Score <- seurat_obj_dummy$predicted.subclass.score[match(seurat_obj_dummy$row_names, seurat_obj$row_names)]
-
-      message("Azimuth annotation completed")
-
-      seurat_obj
-    }, error = function(e) {
-      warning("Azimuth annotation failed and was skipped -- Population/Subpopulation ",
-              "will be absent from metadata.\n  Reason: ", conditionMessage(e))
-      seurat_obj
-    })
+    seurat_obj <- AzimuthAnnotation(seurat_obj, reference = reference, verbose = verbose)
   } else {
     message("Skipping Azimuth annotation (run_azimuth = FALSE).")
   }
@@ -292,6 +277,134 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
   gc()
   return(seurat_obj)
 }
+
+# Is the Azimuth reference (SeuratData package "<reference>.SeuratData")
+# installed? If not, install it with a long download timeout. Returns TRUE or
+# an error message. Paths to a local reference directory are accepted as is.
+# @noRd
+.EnsureAzimuthReference <- function(reference, timeout = 3600, verbose = TRUE) {
+  if (dir.exists(reference)) return(TRUE)
+  pkg <- paste0(tolower(reference), ".SeuratData")
+  if (requireNamespace(pkg, quietly = TRUE)) return(TRUE)
+  if (!requireNamespace("SeuratData", quietly = TRUE)) {
+    return(paste0("Azimuth reference '", reference, "' is not installed and package ",
+                  "'SeuratData' is missing: remotes::install_github('satijalab/seurat-data')"))
+  }
+  if (verbose) {
+    message("Azimuth reference '", reference, "' is not installed; downloading it ",
+            "(only the first time, can take several minutes)...")
+  }
+  old <- options(timeout = max(timeout, getOption("timeout")))
+  on.exit(options(old), add = TRUE)
+  res <- tryCatch({
+    SeuratData::InstallData(tolower(reference))
+    TRUE
+  }, error = function(e) conditionMessage(e))
+  if (isTRUE(res) && requireNamespace(pkg, quietly = TRUE)) return(TRUE)
+  paste0("Could not install the Azimuth reference '", reference, "'",
+         if (!isTRUE(res)) paste0(": ", res) else "",
+         ". It is downloaded from seurat.nygenome.org: check the internet access of ",
+         "this computer and install it by hand with\n  options(timeout = 3600); ",
+         "SeuratData::InstallData('", tolower(reference), "')")
+}
+
+
+#' Cell type annotation with Azimuth
+#'
+#' Maps the cells to an Azimuth reference and adds \code{Population}
+#' (predicted class), \code{Population_Score}, \code{Subpopulation}
+#' (predicted subclass) and \code{Subpopulation_Score} to the metadata. Used
+#' by \code{\link{UploadSce}()}; can also be run on an existing object (e.g.
+#' one loaded with \code{run_azimuth = FALSE}, or where Azimuth failed).
+#'
+#' Azimuth needs internet access to \code{seurat.nygenome.org}: the
+#' reference (a SeuratData package, installed once) and a gene-name
+#' conversion table that \code{Azimuth::RunAzimuth()} downloads on every run
+#' (Ensembl ids such as \code{ENSG...} / \code{ENSMUSG...} are converted to
+#' the reference's gene symbols with it).
+#'
+#' @param seurat_obj A Seurat object with an RNA assay (counts).
+#' @param reference Azimuth reference: \code{"humancortexref"} (default),
+#'   \code{"mousecortexref"}, another Azimuth reference name, or the path to a
+#'   local reference directory.
+#' @param timeout Seconds allowed for downloads (reference install and
+#'   conversion table). Default 3600 (R's default, 60, is too short).
+#' @param on_error \code{"warn"} (default): return \code{seurat_obj} without
+#'   the new columns and warn with the reason; \code{"stop"}: raise the error.
+#' @param verbose Print progress. Default \code{TRUE}.
+#'
+#' @return \code{seurat_obj} with \code{Population}, \code{Population_Score},
+#'   \code{Subpopulation} and \code{Subpopulation_Score}.
+#'
+#' @examples
+#' \dontrun{
+#' seurat_obj <- AzimuthAnnotation(seurat_obj, reference = "humancortexref")
+#' table(seurat_obj$Subpopulation)
+#' }
+#'
+#' @export
+AzimuthAnnotation <- function(seurat_obj,
+                              reference = "humancortexref",
+                              timeout   = 3600,
+                              on_error  = c("warn", "stop"),
+                              verbose   = TRUE) {
+  on_error <- match.arg(on_error)
+  .fail <- function(msg) {
+    if (on_error == "stop") stop(msg, call. = FALSE)
+    warning("Azimuth annotation skipped -- Population/Subpopulation not added.\n  Reason: ",
+            msg, call. = FALSE)
+    seurat_obj
+  }
+  if (!requireNamespace("Azimuth", quietly = TRUE)) {
+    return(.fail("package 'Azimuth' is not installed: remotes::install_github('satijalab/azimuth')"))
+  }
+
+  ok <- .EnsureAzimuthReference(reference, timeout = timeout, verbose = verbose)
+  if (!isTRUE(ok)) return(.fail(ok))
+
+  # Azimuth calls some SeuratObject/Seurat generics (e.g. `Key<-`) unqualified,
+  # assuming they are attached; this package only imports them.
+  for (pkg in c("SeuratObject", "Seurat")) {
+    if (!paste0("package:", pkg) %in% search() && requireNamespace(pkg, quietly = TRUE)) {
+      suppressPackageStartupMessages(attachNamespace(pkg))
+    }
+  }
+
+  if (verbose) message("Running Azimuth annotation with ", reference, "...")
+  old <- options(timeout = max(timeout, getOption("timeout")))
+  on.exit(options(old), add = TRUE)
+  mapped <- tryCatch(Azimuth::RunAzimuth(seurat_obj, reference = reference),
+                     error = function(e) e)
+  if (inherits(mapped, "error")) {
+    return(.fail(paste0(
+      conditionMessage(mapped),
+      "\n  Common causes: no access to seurat.nygenome.org (the gene-name table is ",
+      "downloaded on every run), a download timeout, or Seurat/Azimuth versions ",
+      "that do not match (packageVersion('Seurat'), packageVersion('Azimuth')).")))
+  }
+
+  pred <- grep("^predicted\\.", colnames(mapped[[]]), value = TRUE)
+  need <- c("predicted.class", "predicted.subclass")
+  if (!all(need %in% pred)) {
+    return(.fail(paste0("Azimuth ran but did not return ", paste(need, collapse = " / "),
+                        ". Columns returned: ",
+                        if (length(pred)) paste(pred, collapse = ", ") else "none")))
+  }
+
+  idx <- match(colnames(seurat_obj), colnames(mapped))
+  seurat_obj$Population          <- mapped$predicted.class[idx]
+  seurat_obj$Population_Score    <- mapped$predicted.class.score[idx]
+  seurat_obj$Subpopulation       <- mapped$predicted.subclass[idx]
+  seurat_obj$Subpopulation_Score <- mapped$predicted.subclass.score[idx]
+
+  if (verbose) {
+    message("Azimuth annotation completed: ",
+            length(unique(stats::na.omit(seurat_obj$Subpopulation))), " subpopulations, ",
+            sum(is.na(seurat_obj$Subpopulation)), " cells without a label.")
+  }
+  seurat_obj
+}
+
 
 #' Annotate gene features with genomic information
 #'
