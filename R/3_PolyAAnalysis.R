@@ -1061,9 +1061,12 @@ PolyAPipeline <- function(seurat_obj,
 #'   ... (pairs ordered 5' to 3'); a site in two pairs gets both labels (e.g.
 #'   \code{d1/p2}); other sites (\code{usage_sites = "all"}) \code{s1},
 #'   \code{s2}, ... Default \code{TRUE}.
-#' @param show_stats Logical. Title with the gene and, for each RED pair
-#'   shown, the cell type, condition, event type (\code{REDu} = 3' UTR,
-#'   \code{REDi} = intronic), RED and FDR. Default \code{TRUE}.
+#' @param show_stats Logical. Centred title \code{"<cell type> - <gene>"} and
+#'   one line per RED pair shown with the event type, RED and FDR, e.g.
+#'   \code{"Intronic APA | REDi = -0.45, FDR = 0.001"} or
+#'   \code{"3' UTR APA | REDu = 0.30, FDR = 0.02"}. The cell type, condition
+#'   and pair labels (\code{p1-d1}) are added to the lines only when the plot
+#'   shows more than one of them. Default \code{TRUE}.
 #' @param fdr_col Column of \code{deg_list} shown as FDR. Default
 #'   \code{"PASTA_padj"} (adjusted PASTA p-value, \code{DEPsMatrix(Pasta =
 #'   TRUE)}); if absent or \code{NA} (e.g. \code{Pasta = FALSE}), the first
@@ -2012,8 +2015,10 @@ PolyAPlot <- function(
     }
   }
 
-  # Title: gene + one line per RED pair shown (cell type | condition | event:
-  # labels, RED, FDR).
+  # Title "<cell type> - <gene>" (centred) and one subtitle line per RED pair
+  # shown: "Intronic APA | REDi = -0.45, FDR = 0.001" / "3' UTR APA | REDu = ...".
+  # Cell type / condition / pair labels only enter a line when the plot shows
+  # more than one of them (otherwise the lines would be ambiguous).
   if (isTRUE(show_stats) && n_pairs > 0) {
     st <- results[!is.na(results$p_peak) & !is.na(results$d_peak), , drop = FALSE]
     pk <- match(paste(st$p_peak, st$d_peak), paste(pair_tbl$p_peak, pair_tbl$d_peak))
@@ -2021,24 +2026,25 @@ PolyAPlot <- function(
     fdr_use <- fdr_try[fdr_try %in% colnames(st)]
     fdr_use <- fdr_use[vapply(fdr_use, function(cl) any(!is.na(st[[cl]])), logical(1))][1]
     fdr_txt <- if (is.na(fdr_use)) "NA" else formatC(st[[fdr_use]], format = "g", digits = 2)
-    fdr_name <- if (is.na(fdr_use)) "FDR" else
-      paste0("FDR (", sub("^RED_", "", sub("_padj$", "", fdr_use)), ")")
-    ev <- if ("RED_type" %in% colnames(st)) {
-      paste0(st$RED_type, ifelse(st$RED_type == "REDi", " (intronic)", " (3' UTR)"))
-    } else "RED"
+    red_type <- if ("RED_type" %in% colnames(st)) as.character(st$RED_type) else rep("RED", nrow(st))
+    event <- ifelse(red_type == "REDi", "Intronic APA",
+                    ifelse(red_type == "REDu", "3' UTR APA", "APA"))
     ct   <- if ("Cells" %in% colnames(st)) as.character(st$Cells) else rep("", nrow(st))
     cond <- if ("Condition" %in% colnames(st)) as.character(st$Condition) else rep("", nrow(st))
-    lines <- paste0(ct, " | ", cond, " | ", ev, "  ",
-                    pair_tbl$p_lab[pk], " \u2192 ", pair_tbl$d_lab[pk],
-                    ":  RED = ", formatC(st$RED, format = "f", digits = 2),
-                    ",  ", fdr_name, " = ", fdr_txt)
+    pre  <- paste0(if (length(unique(ct)) > 1) paste0(ct, " | ") else "",
+                   if (length(unique(cond)) > 1) paste0(cond, " | ") else "")
+    pair_txt <- if (n_pairs > 1) paste0(" (", pair_tbl$p_lab[pk], "-", pair_tbl$d_lab[pk], ")") else ""
+    lines <- paste0(pre, event, pair_txt, " | ", red_type, " = ",
+                    formatC(st$RED, format = "f", digits = 2), ", FDR = ", fdr_txt)
     lines <- unique(lines[order(ct, cond, pk)])
+    ttl <- paste(c(paste(unique(ct[ct != ""]), collapse = ", "), gene)[
+      c(any(ct != ""), TRUE)], collapse = " \u2013 ")
     out <- out + patchwork::plot_annotation(
-      title    = gene,
+      title    = ttl,
       subtitle = paste(lines, collapse = "\n"),
       theme    = ggplot2::theme(
-        plot.title    = ggplot2::element_text(size = text_size + 2, face = "bold.italic"),
-        plot.subtitle = ggplot2::element_text(size = text_size - 1)
+        plot.title    = ggplot2::element_text(size = text_size + 2, face = "bold", hjust = 0.5),
+        plot.subtitle = ggplot2::element_text(size = text_size - 1, hjust = 0.5)
       )
     )
   }
