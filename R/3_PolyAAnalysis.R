@@ -1065,8 +1065,10 @@ PolyAPipeline <- function(seurat_obj,
 #'   shown, the cell type, condition, event type (\code{REDu} = 3' UTR,
 #'   \code{REDi} = intronic), RED and FDR. Default \code{TRUE}.
 #' @param fdr_col Column of \code{deg_list} shown as FDR. Default
-#'   \code{"RED_LRT_padj"}; if absent or \code{NA}, the first available of
-#'   \code{RED_fisher_padj} / \code{RED_ttest_padj} is used.
+#'   \code{"PASTA_padj"} (adjusted PASTA p-value, \code{DEPsMatrix(Pasta =
+#'   TRUE)}); if absent or \code{NA} (e.g. \code{Pasta = FALSE}), the first
+#'   available of \code{RED_LRT_padj} / \code{RED_fisher_padj} /
+#'   \code{RED_ttest_padj} is used.
 #' @param bin_size Bin width (bp) of the fragment-based coverage. Default
 #'   \code{10}.
 #' @param verbose Logical. Whether to print progress messages. Default \code{TRUE}
@@ -1139,7 +1141,7 @@ PolyAPlot <- function(
     legend_position = "top",
     site_labels     = TRUE,
     show_stats      = TRUE,
-    fdr_col         = "RED_LRT_padj",
+    fdr_col         = "PASTA_padj",
     bin_size        = 10,
     verbose         = TRUE,
     text_size       = 12,
@@ -2015,12 +2017,12 @@ PolyAPlot <- function(
   if (isTRUE(show_stats) && n_pairs > 0) {
     st <- results[!is.na(results$p_peak) & !is.na(results$d_peak), , drop = FALSE]
     pk <- match(paste(st$p_peak, st$d_peak), paste(pair_tbl$p_peak, pair_tbl$d_peak))
-    fdr_try <- unique(c(fdr_col, "RED_LRT_padj", "RED_fisher_padj", "RED_ttest_padj"))
+    fdr_try <- unique(c(fdr_col, "PASTA_padj", "RED_LRT_padj", "RED_fisher_padj", "RED_ttest_padj"))
     fdr_use <- fdr_try[fdr_try %in% colnames(st)]
     fdr_use <- fdr_use[vapply(fdr_use, function(cl) any(!is.na(st[[cl]])), logical(1))][1]
     fdr_txt <- if (is.na(fdr_use)) "NA" else formatC(st[[fdr_use]], format = "g", digits = 2)
     fdr_name <- if (is.na(fdr_use)) "FDR" else
-      paste0("FDR (", sub("^RED_(.*)_padj$", "\\1", fdr_use), ")")
+      paste0("FDR (", sub("^RED_", "", sub("_padj$", "", fdr_use)), ")")
     ev <- if ("RED_type" %in% colnames(st)) {
       paste0(st$RED_type, ifelse(st$RED_type == "REDi", " (intronic)", " (3' UTR)"))
     } else "RED"
