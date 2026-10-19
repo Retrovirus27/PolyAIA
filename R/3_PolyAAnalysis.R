@@ -1053,8 +1053,11 @@ PolyAPipeline <- function(seurat_obj,
 #' @param bulk_title Logical. Show the "Bulk" title on the bulk track.
 #'   Default \code{FALSE}.
 #' @param legend_position Legend position for the fragment-based tracks
-#'   (\code{"top"}, \code{"bottom"}, \code{"right"}, \code{"none"}...).
-#'   Default \code{"top"}.
+#'   (\code{"left"}, \code{"top"}, \code{"bottom"}, \code{"right"},
+#'   \code{"none"}...). \code{NULL} (default): \code{"left"} (vertical) with
+#'   \code{overlay = TRUE} -- it keeps the left space the group labels take
+#'   without overlay, which the transcript names of the gene track need --
+#'   and \code{"top"} otherwise.
 #' @param site_labels Logical. Label the sites above the PAS triangles (and in
 #'   the usage panel): \code{p} (proximal) and \code{d} (distal) of the RED
 #'   pair; with more than one pair \code{p1}/\code{d1}, \code{p2}/\code{d2},
@@ -1141,7 +1144,7 @@ PolyAPlot <- function(
     usage_scale       = c("percent", "cpm"),
     panels_layout     = c("row", "column"),
     usage_sites       = c("significant", "all"),
-    legend_position = "top",
+    legend_position = NULL,
     site_labels     = TRUE,
     show_stats      = TRUE,
     fdr_col         = "PASTA_padj",
@@ -1173,6 +1176,9 @@ PolyAPlot <- function(
     if (verbose) message("Coverage built from fragments: using normalize = \"counts\".")
     normalize <- "counts"
   }
+  # Overlay: legend on the left (vertical), in the space the group labels take
+  # without overlay, so the gene track keeps room for the transcript names.
+  if (is.null(legend_position)) legend_position <- if (isTRUE(overlay)) "left" else "top"
   usage_type <- match.arg(usage_type)
   expression_source <- match.arg(expression_source)
   usage_scale       <- match.arg(usage_scale)

@@ -234,6 +234,9 @@
         # panel needs it; the usage panel itself has no legend
         legend.position   = if (isTRUE(overlay) || isTRUE(usage_panel) || isTRUE(expression_panel))
                               legend_position else "none",
+        # vertical when the legend sits at the side (left/right)
+        legend.direction  = if (is.character(legend_position) &&
+                                legend_position[1] %in% c("left", "right")) "vertical" else "horizontal",
         legend.text       = ggplot2::element_text(size = legend_text_size)
       )
     if (!isTRUE(overlay)) {
