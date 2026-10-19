@@ -148,7 +148,12 @@ a per-cell token. Default \code{"_"}.}
 \code{"3xTg + Alcohol"}): the metadata column holding those labels and the
 control label (e.g. \code{"B6 + Control"}). The coverage keeps the cells
 whose label is in \code{condition} or \code{control}; \code{group.by}
-defaults to \code{condition_col}.}
+defaults to \code{condition_col}. With \code{overlay = TRUE} the
+control group is always drawn in the background and the treatment(s) in
+front: \code{control} if given, otherwise the control half of the
+\code{Condition} labels shown (e.g. \code{"B6_Control"} in
+\code{"3xTg_Alcohol_vs_B6_Control"}), otherwise the only group whose
+name contains "control".}
 
 \item{cell_order}{Deprecated alias of \code{cell_filter} (it always acted as
 a filter, never an ordering). Default \code{NULL}.}

@@ -1016,7 +1016,12 @@ PolyAPipeline <- function(seurat_obj,
 #'   \code{"3xTg + Alcohol"}): the metadata column holding those labels and the
 #'   control label (e.g. \code{"B6 + Control"}). The coverage keeps the cells
 #'   whose label is in \code{condition} or \code{control}; \code{group.by}
-#'   defaults to \code{condition_col}.
+#'   defaults to \code{condition_col}. With \code{overlay = TRUE} the
+#'   control group is always drawn in the background and the treatment(s) in
+#'   front: \code{control} if given, otherwise the control half of the
+#'   \code{Condition} labels shown (e.g. \code{"B6_Control"} in
+#'   \code{"3xTg_Alcohol_vs_B6_Control"}), otherwise the only group whose
+#'   name contains "control".
 #' @param normalize Coverage scale. \code{"signac"} (default) keeps
 #'   \code{Signac::CoveragePlot()}. \code{"counts"}: coverage per million polyA
 #'   counts of each group. \code{"gene"}: each group divided by its own
@@ -1785,9 +1790,23 @@ PolyAPlot <- function(
       data.frame(site = character(0), peak = character(0), start = integer(0), end = integer(0))
     }
 
+    # Control group(s), drawn first (background) in the overlay: `control`, else
+    # the control half of the Condition labels shown ("<trt>_vs_<ctl>"), else
+    # the only group whose name contains "control".
+    back_groups <- if (!is.null(control)) control else {
+      conds <- if ("Condition" %in% colnames(results)) unique(as.character(results$Condition)) else character(0)
+      unlist(lapply(strsplit(conds, condition_vs, fixed = TRUE), function(x) x[length(x)]))
+    }
+    back_groups <- intersect(back_groups, group_levels)
+    if (!length(back_groups)) {
+      hit <- group_levels[grepl("control", group_levels, ignore.case = TRUE)]
+      if (length(hit) == 1) back_groups <- hit
+    }
+
     cov_extra <- .PolyACoverageTracks(
       seu = seu, assay = "polyA", tracks = tracks,
       group_of = group_of, group_levels = group_levels,
+      back_groups = back_groups,
       rep_of = rep_of, show_replicates = show_replicates,
       replicate_coverage = replicate_coverage,
       sites = sites_df,

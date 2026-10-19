@@ -58,6 +58,7 @@
 #' @noRd
 .PolyACoverageTracks <- function(seu, assay, tracks, group_of, group_levels,
                                  rep_of, show_replicates, sites, chr,
+                                 back_groups = character(0),
                                  replicate_coverage = FALSE,
                                  roi_start, roi_end, dedup_umi, normalize,
                                  overlay, bin_size, highlight, colors,
@@ -193,6 +194,15 @@
     d  <- sig[sig$track == tr, , drop = FALSE]
     dr <- if (!is.null(sig_rep)) sig_rep[sig_rep$track == tr, , drop = FALSE] else NULL
     has_rep <- !is.null(dr) && nrow(dr) > 0
+    # overlay drawing order: control group(s) first (background), then the
+    # treatment(s) on top. Only the drawing order; colours / legend unchanged.
+    lv <- levels(droplevels(d$group))
+    d$.draw <- factor(as.character(d$group),
+                      levels = c(intersect(back_groups, lv), setdiff(lv, back_groups)))
+    if (has_rep) {
+      dr$line <- factor(dr$line, levels = unique(
+        dr$line[order(!(as.character(dr$group) %in% back_groups))]))
+    }
 
     p <- ggplot2::ggplot(d, ggplot2::aes(x = .data$pos, y = .data$value,
                                          fill = .data$group, colour = .data$group))
@@ -204,13 +214,15 @@
     }
     if (isTRUE(overlay)) {
       p <- p +
-        ggplot2::geom_area(position = "identity", alpha = if (has_rep) 0.15 else 0.25,
+        ggplot2::geom_area(ggplot2::aes(group = .data$.draw),
+                           position = "identity", alpha = if (has_rep) 0.15 else 0.25,
                            colour = NA)
       if (has_rep) {
         p <- p + ggplot2::geom_line(data = dr, ggplot2::aes(group = .data$line),
                                     linewidth = 0.3, alpha = 0.6)
       }
-      p <- p + ggplot2::geom_line(linewidth = if (has_rep) 0.8 else 0.5)
+      p <- p + ggplot2::geom_line(ggplot2::aes(group = .data$.draw),
+                                  linewidth = if (has_rep) 0.8 else 0.5)
     } else {
       p <- p +
         ggplot2::geom_area(stat = "identity", alpha = if (has_rep) 0.5 else 1, colour = NA)
