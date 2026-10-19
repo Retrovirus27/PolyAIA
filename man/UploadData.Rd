@@ -48,6 +48,12 @@ An annotated Seurat object.
 Loads raw count data, removes doublets, and performs cell type annotation
 using one or two reference datasets.
 }
+\details{
+One sample per call. To get the same object as
+  \code{\link{UploadSce}()}, merge the samples, add their metadata and run
+  \code{\link{AddQCMetrics}()}, \code{\link{AnnotateRNA}()} and
+  \code{\link{AzimuthAnnotation}()}.
+}
 \examples{
 # UploadData(data, DataName = "Sample1", Type = "h5")
 # UploadData(data, DataName = "Sample1", RefAnnotation1 = ImmGenData(), RDoublets = TRUE)

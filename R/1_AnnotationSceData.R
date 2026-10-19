@@ -206,53 +206,13 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
 
   message("Seurat object created successfully")
 
-  # Calculate basic QC metrics (nCount_RNA and nFeature_RNA)
-  message("Calculating QC metrics...")
-  seurat_obj[["nCount_RNA"]] <- Matrix::colSums(seurat_obj[["RNA"]]$counts)
-  seurat_obj[["nFeature_RNA"]] <- Matrix::colSums(seurat_obj[["RNA"]]$counts > 0)
+  # QC metrics: nCount_RNA / nFeature_RNA and % mito, % ribo... (scCustomize)
+  seurat_obj <- AddQCMetrics(seurat_obj, species = species, ensembl_ids = TRUE)
 
-  # Calculate Mito and Ribo metrics
-  if (!requireNamespace("scCustomize", quietly = TRUE)) {
-    stop("Package 'scCustomize' is required. Install with: install.packages('scCustomize')")
-  }
-
-  if (species == "human") {
-    tryCatch({
-      seurat_obj <- scCustomize::Add_Cell_QC_Metrics(object = seurat_obj, species = "human", ensembl_ids = TRUE, add_cell_cycle = FALSE)
-      message("Mito and ribo metrics calculated for human and added to metadata")
-    }, error = function(e) {
-      warning("Add_Cell_QC_Metrics failed and was skipped -- QC metrics will be absent from metadata.\n  Reason: ", conditionMessage(e))
-    })
-  }
-
-  if (species == "mouse") {
-    tryCatch({
-      seurat_obj <- scCustomize::Add_Cell_QC_Metrics(object = seurat_obj, species = "mouse", ensembl_ids = TRUE, add_cell_cycle = FALSE)
-      message("Mito and ribo metrics calculated for mouse and added to metadata")
-    }, error = function(e) {
-      warning("Add_Cell_QC_Metrics failed and was skipped -- QC metrics will be absent from metadata.\n  Reason: ", conditionMessage(e))
-    })
-  }
-
-  anno <- AnnotateGenes(rownames(seurat_obj), IDtype = IDtype, species = species, genome_build = genome_build, columns = columns, include_ranges = include_ranges, verbose = verbose)
-  colnames(anno)[1]<- "ID"
-
-  # Drop the identifier columns we don't need on the Seurat side, but only if
-  # they're actually present -- keeps this safe when `columns` is customized.
-  anno_clean <- anno %>%
-    dplyr::select(-tidyselect::any_of(c("ENTREZID", "ENZYME", "GENETYPE", "SYMBOL")))
-
-  # Join by an explicit feature ID. The Assay5 meta.data rows follow the
-  # feature order but its rownames are NOT the feature names, so set `ID` from
-  # rownames(seurat_obj) instead of relying on an ID column carried over from
-  # the SCE rowData. left_join() keeps the row order of the left table, and
-  # AnnotateGenes() returns one row per ID, so rows stay aligned with features.
-  rna_meta <- seurat_obj@assays[["RNA"]]@meta.data
-  rna_meta$ID <- rownames(seurat_obj)
-  seurat_obj@assays[["RNA"]]@meta.data <- rna_meta %>%
-    dplyr::left_join(anno_clean, by = "ID", suffix = c("", ".anno")) %>%
-    dplyr::select(-tidyselect::ends_with(".anno"))  # drop any remaining duplicates from anno side
-
+  # Gene annotation (symbol, biotype, coordinates, transcripts) in the RNA assay
+  seurat_obj <- AnnotateRNA(seurat_obj, species = species, genome_build = genome_build,
+                            IDtype = IDtype, columns = columns,
+                            include_ranges = include_ranges, verbose = verbose)
 
   # Run Azimuth cell type annotation
   if (run_azimuth) {
@@ -335,6 +295,125 @@ AzimuthAnnotation <- function(seurat_obj, reference = c("humancortexref", "mouse
             "will be absent from metadata.\n  Reason: ", conditionMessage(e))
     seurat_obj
   })
+}
+
+
+#' QC metrics per cell
+#'
+#' Adds \code{nCount_RNA} and \code{nFeature_RNA} (from the RNA counts) and
+#' the mitochondrial / ribosomal and other QC percentages of
+#' \code{scCustomize::Add_Cell_QC_Metrics()} (\code{percent_mito},
+#' \code{percent_ribo}, ...), as used by \code{QCFilter()} / \code{QCPlot()}.
+#' \code{\link{UploadSce}()} runs it; use it after \code{\link{UploadData}()}
+#' (and merging the samples) to get the same columns.
+#'
+#' @param seurat_obj A Seurat object with an RNA assay (counts).
+#' @param species \code{"human"} or \code{"mouse"}.
+#' @param ensembl_ids Logical. Are the gene names Ensembl ids? \code{NULL}
+#'   (default): detected from the gene names (\code{ENS...}).
+#'
+#' @return \code{seurat_obj} with the QC columns in its metadata.
+#'
+#' @examples
+#' \dontrun{
+#' seurat_obj <- AddQCMetrics(seurat_obj, species = "human")
+#' }
+#'
+#' @export
+AddQCMetrics <- function(seurat_obj, species = c("human", "mouse"), ensembl_ids = NULL) {
+  species <- match.arg(species)
+  if (!requireNamespace("scCustomize", quietly = TRUE)) {
+    stop("Package 'scCustomize' is required. Install with: install.packages('scCustomize')")
+  }
+  if (is.null(ensembl_ids)) {
+    ensembl_ids <- mean(grepl("^ENS", rownames(seurat_obj[["RNA"]]))) > 0.5
+  }
+
+  # Calculate basic QC metrics (nCount_RNA and nFeature_RNA); layers joined if
+  # the RNA assay is split by sample
+  message("Calculating QC metrics...")
+  cnt <- .PBCounts(seurat_obj, "RNA")
+  seurat_obj[["nCount_RNA"]]   <- Matrix::colSums(cnt)
+  seurat_obj[["nFeature_RNA"]] <- Matrix::colSums(cnt > 0)
+
+  # Calculate Mito and Ribo metrics
+  tryCatch({
+    seurat_obj <- scCustomize::Add_Cell_QC_Metrics(object = seurat_obj, species = species,
+                                                   ensembl_ids = ensembl_ids, add_cell_cycle = FALSE)
+    message("Mito and ribo metrics calculated for ", species, " and added to metadata")
+  }, error = function(e) {
+    warning("Add_Cell_QC_Metrics failed and was skipped -- QC metrics will be absent from metadata.\n  Reason: ",
+            conditionMessage(e))
+  })
+  seurat_obj
+}
+
+
+#' Gene annotation of the RNA assay
+#'
+#' Annotates the genes of the RNA assay with \code{\link{AnnotateGenes}()}
+#' (symbol, biotype and, with \code{include_ranges = TRUE}, chromosome,
+#' start, end, strand and the transcripts) and stores it in the assay's
+#' feature metadata, with the gene id in column \code{ID}. \code{DEPsMatrix()}
+#' and \code{PolyAPlot()} read the genes' coordinates and transcripts from
+#' there. \code{\link{UploadSce}()} runs it; use it after
+#' \code{\link{UploadData}()} (and merging the samples).
+#'
+#' @inheritParams AnnotateGenes
+#' @param seurat_obj A Seurat object with an RNA assay.
+#' @param IDtype Gene identifier type of the RNA gene names: \code{"ENSEMBL"}
+#'   (default), \code{"SYMBOL"} or \code{"ENTREZID"}.
+#'
+#' @return \code{seurat_obj} with the annotation in
+#'   \code{seurat_obj[["RNA"]]} feature metadata.
+#'
+#' @examples
+#' \dontrun{
+#' seurat_obj <- AnnotateRNA(seurat_obj, species = "human", genome_build = "hg38")
+#' }
+#'
+#' @export
+AnnotateRNA <- function(seurat_obj,
+                        species        = c("human", "mouse"),
+                        genome_build   = c("hg38", "hg19", "mm10", "mm39"),
+                        IDtype         = c("ENSEMBL", "SYMBOL", "ENTREZID"),
+                        columns        = c("SYMBOL", "GENETYPE", "ENTREZID", "ENZYME", "ENSEMBL"),
+                        include_ranges = TRUE,
+                        verbose        = TRUE) {
+  species      <- match.arg(species)
+  genome_build <- match.arg(genome_build)
+  IDtype       <- match.arg(IDtype)
+
+  rna   <- seurat_obj[["RNA"]]
+  genes <- rownames(rna)
+
+  anno <- AnnotateGenes(genes, IDtype = IDtype, species = species, genome_build = genome_build,
+                        columns = columns, include_ranges = include_ranges, verbose = verbose)
+  colnames(anno)[1] <- "ID"
+
+  # Drop the identifier columns we don't need on the Seurat side, but only if
+  # they're actually present -- keeps this safe when `columns` is customized.
+  anno_clean <- anno %>%
+    dplyr::select(-tidyselect::any_of(c("ENTREZID", "ENZYME", "GENETYPE", "SYMBOL")))
+
+  # Join by an explicit feature ID. The Assay5 meta.data rows follow the
+  # feature order but its rownames are NOT the feature names, so set `ID` from
+  # the assay's feature names. left_join() keeps the row order of the left
+  # table, and AnnotateGenes() returns one row per ID, so rows stay aligned
+  # with features. (Seurat v3 assays keep it in meta.features instead.)
+  v5 <- inherits(rna, "Assay5")
+  rna_meta <- if (v5) rna@meta.data else rna@meta.features
+  rna_meta$ID <- genes
+  rna_meta <- rna_meta %>%
+    dplyr::left_join(anno_clean, by = "ID", suffix = c("", ".anno")) %>%
+    dplyr::select(-tidyselect::ends_with(".anno"))  # drop any remaining duplicates from anno side
+  if (v5) {
+    seurat_obj@assays[["RNA"]]@meta.data <- rna_meta
+  } else {
+    rownames(rna_meta) <- genes
+    seurat_obj@assays[["RNA"]]@meta.features <- rna_meta
+  }
+  seurat_obj
 }
 
 
@@ -545,74 +624,6 @@ AnnotateGenes <- function(
 }
 
 
-#' Annotation of RNA data
-#'
-#' @param data A Seurat object.
-#' @param idtype ID type used for gene annotation. Default is \code{"ENSEMBL"}.
-#' @param Txdb Optional \code{TxDb}/\code{EnsDb} object used to add genomic
-#'   range information. If \code{NULL} (default), ranges are skipped.
-#'
-#' @return A Seurat object with annotated RNA assay.
-#' @noRd
-#'
-Annot <- function(data, idtype, Txdb = NULL) {
-
-  annotation <- AnnotationDbi::select(
-    Homo.sapiens::Homo.sapiens,
-    keys    = row.names(data),
-    columns = c("SYMBOL", "GENETYPE", "ENTREZID", "ENZYME", "ENSEMBL"),
-    keytype = idtype
-  )
-
-  # Deduplicate on the key column
-  id_column  <- annotation[[idtype]]
-  annotation <- annotation[!duplicated(id_column), ]
-
-  # Safe row-matched assignment — handles missing/unmatched ENSEMBL IDs
-  features <- rownames(data)
-  rownames(annotation) <- annotation[[idtype]]
-
-  data@assays$RNA@meta.data$SYMBOL   <- annotation[features, "SYMBOL"]
-  data@assays$RNA@meta.data$GENETYPE <- annotation[features, "GENETYPE"]
-  data@assays$RNA@meta.data$ENTREZID <- annotation[features, "ENTREZID"]
-  data@assays$RNA@meta.data$ENSEMBL  <- annotation[features, "ENSEMBL"]
-
-  if (!is.null(Txdb)) {
-    genes_df <- data.frame(Txdb)
-
-    genes_aggregated <- genes_df %>%
-      dplyr::group_by(gene_id) %>%
-      dplyr::summarise(
-        chromosome   = dplyr::first(seqnames),
-        gene_start   = min(start),
-        gene_end     = max(end),
-        gene_width   = gene_end - gene_start + 1,
-        strand       = dplyr::first(strand),
-        gene_name    = dplyr::first(gene_name),
-        gene_biotype = dplyr::first(gene_biotype),
-        n_transcripts = dplyr::n_distinct(tx_id),
-        transcript_info = list(data.frame(
-          tx_id        = tx_id,
-          tx_chromosome = seqnames,
-          tx_start     = start,
-          tx_end       = end,
-          tx_strand    = strand,
-          tx_width     = width,
-          tx_type      = type
-        )),
-        .groups = "drop"
-      ) %>%
-      dplyr::rename(ENSEMBL = gene_id)
-
-    meta <- data@assays$RNA@meta.data
-    meta <- dplyr::left_join(meta, genes_aggregated, by = "ENSEMBL")
-    rownames(meta) <- rownames(data@assays$RNA@meta.data)
-    data@assays$RNA@meta.data <- meta
-  }
-
-  return(data)
-}
-
 #' Create an annotated Seurat object
 #'
 #' Loads raw count data, removes doublets, and performs cell type annotation
@@ -634,9 +645,16 @@ Annot <- function(data, idtype, Txdb = NULL) {
 #'
 #' @return An annotated Seurat object.
 #'
+#' @details One sample per call. To get the same object as
+#'   \code{\link{UploadSce}()}, merge the samples, add their metadata and run
+#'   \code{\link{AddQCMetrics}()}, \code{\link{AnnotateRNA}()} and
+#'   \code{\link{AzimuthAnnotation}()}.
+#'
 #' @examples
 #' # UploadData(data, DataName = "Sample1", Type = "h5")
 #' # UploadData(data, DataName = "Sample1", RefAnnotation1 = ImmGenData(), RDoublets = TRUE)
+#'
+#' @export
 UploadData <- function(data, DataName, Condition = NULL, RefAnnotation1 = NULL, RefAnnotation2 = NULL,
                        Type = c("h5", "Ambient.h5","counts"), RDoublets = TRUE, ApplyTags = TRUE,
                        IDType = "ENSEMBL", ncores = 4){
