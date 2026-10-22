@@ -24,7 +24,9 @@ UmapPlot(
   show_numbers = FALSE,
   n_col = NULL,
   n_row = NULL,
-  sizes = c(9, 0.5, 11, 10, 10)
+  sizes = c(9, 0.5, 11, 10, 10),
+  shuffle = TRUE,
+  seed = 1
 )
 }
 \arguments{
@@ -75,6 +77,13 @@ for low, mid, and high values. Default is c("blue","lightgray","red")}
 \item{n_row}{Number of rows for facet layout. Default is NULL (automatic)}
 
 \item{sizes}{Numeric value for base font size. Default is c(9,0.5,11,10,10) for the following: base_size, base_line_size, legend.title, legend.text, strip.text, strip.text.x and strip.text.y}
+
+\item{shuffle}{Logical. Draw the cells in random order, so the groups
+(e.g. two strains or studies) are interleaved instead of one group
+covering the other. Default \code{TRUE}.}
+
+\item{seed}{Seed for the random order (reproducible plots). Default \code{1}.
+The session's random state is restored afterwards.}
 }
 \value{
 A ggplot2 object

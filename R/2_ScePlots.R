@@ -587,6 +587,11 @@ QCPlot <- function(
 #' @param n_col Number of columns for facet layout. Default is NULL (automatic)
 #' @param n_row Number of rows for facet layout. Default is NULL (automatic)
 #' @param sizes Numeric value for base font size. Default is c(9,0.5,11,10,10) for the following: base_size, base_line_size, legend.title, legend.text, strip.text, strip.text.x and strip.text.y
+#' @param shuffle Logical. Draw the cells in random order, so the groups
+#'   (e.g. two strains or studies) are interleaved instead of one group
+#'   covering the other. Default \code{TRUE}.
+#' @param seed Seed for the random order (reproducible plots). Default \code{1}.
+#'   The session's random state is restored afterwards.
 #'
 #' @return A ggplot2 object
 #'
@@ -613,7 +618,9 @@ UmapPlot <-
            show_numbers = FALSE,
            n_col = NULL,
            n_row = NULL,
-           sizes = c(9,0.5,11,10,10)) {
+           sizes = c(9,0.5,11,10,10),
+           shuffle = TRUE,
+           seed = 1) {
 
     # UmapPlot() is for 2D UMAP-style visualizations, and this pipeline's
     # convention is to name that embedding "umap_<method>" (e.g. "umap_harmony"),
@@ -661,6 +668,18 @@ UmapPlot <-
     }
     if (show_labels && !is.null(label_by) && !label_by %in% names(data)) {
       stop("Column '", label_by, "' (label_by) not found in data.")
+    }
+
+    # Random drawing order: cells are stored by sample, so without this the
+    # last group is drawn on top of the others. Seeded, and the session's
+    # random state is restored afterwards.
+    if (isTRUE(shuffle)) {
+      if (exists(".Random.seed", envir = globalenv())) {
+        old_seed <- get(".Random.seed", envir = globalenv())
+        on.exit(assign(".Random.seed", old_seed, envir = globalenv()), add = TRUE)
+      }
+      set.seed(seed)
+      data <- data[sample.int(nrow(data)), , drop = FALSE]
     }
 
     th <- ggprism::theme_prism(
