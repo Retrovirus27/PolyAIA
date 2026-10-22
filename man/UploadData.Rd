@@ -57,4 +57,5 @@ One sample per call. To get the same object as
 \examples{
 # UploadData(data, DataName = "Sample1", Type = "h5")
 # UploadData(data, DataName = "Sample1", RefAnnotation1 = ImmGenData(), RDoublets = TRUE)
+
 }
