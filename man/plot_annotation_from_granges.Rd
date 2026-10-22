@@ -13,7 +13,8 @@ plot_annotation_from_granges(
   axis_name_size = 6,
   axis_title_size = 12,
   name_margin = -80,
-  xlim = NULL
+  xlim = NULL,
+  names_as_strips = FALSE
 )
 }
 \arguments{
@@ -39,6 +40,11 @@ them left of the axis. Default \code{-80}.}
 
 \item{xlim}{x limits of the panel (to match the other tracks). \code{NULL}
 (default): the region.}
+
+\item{names_as_strips}{Logical. One row per transcript with its name as a
+left label between the axis and the panel -- the same column as the
+group labels of the coverage tracks -- so the names never overlap the
+transcripts. Default \code{FALSE} (names as y-axis labels).}
 }
 \value{
 A \code{ggplot2} object with the gene annotation track

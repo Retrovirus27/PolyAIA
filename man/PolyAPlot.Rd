@@ -234,11 +234,11 @@ that left space for the transcript names), \code{"top"},
 \code{"top"} otherwise.}
 
 \item{left_space}{Blank space added on the left of every track, as a
-fraction of the region width (the coverage is drawn a bit narrower), so
-the transcript names, drawn just right of the axis, do not overlap the
-transcripts. \code{NULL} (default): 0.12 with the fragment-based
-coverage (\code{dedup_umi}, \code{normalize}, \code{overlay}...), 0 with
-the Signac coverage.}
+fraction of the region width (the tracks are drawn a bit narrower).
+\code{NULL} (default) = 0. With the fragment-based coverage
+(\code{dedup_umi}, \code{normalize}, \code{overlay}...) the transcript
+names sit in their own column, aligned with the track labels, so no extra
+space is needed.}
 
 \item{protein_coding_only}{Logical. Show only the protein-coding
 transcripts in the gene track (transcript biotype from the EnsDb of

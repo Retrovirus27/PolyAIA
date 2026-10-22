@@ -1065,11 +1065,11 @@ PolyAPipeline <- function(seurat_obj,
 #'   \code{NULL} (default): \code{"axis"} with \code{overlay = TRUE},
 #'   \code{"top"} otherwise.
 #' @param left_space Blank space added on the left of every track, as a
-#'   fraction of the region width (the coverage is drawn a bit narrower), so
-#'   the transcript names, drawn just right of the axis, do not overlap the
-#'   transcripts. \code{NULL} (default): 0.12 with the fragment-based
-#'   coverage (\code{dedup_umi}, \code{normalize}, \code{overlay}...), 0 with
-#'   the Signac coverage.
+#'   fraction of the region width (the tracks are drawn a bit narrower).
+#'   \code{NULL} (default) = 0. With the fragment-based coverage
+#'   (\code{dedup_umi}, \code{normalize}, \code{overlay}...) the transcript
+#'   names sit in their own column, aligned with the track labels, so no extra
+#'   space is needed.
 #' @param protein_coding_only Logical. Show only the protein-coding
 #'   transcripts in the gene track (transcript biotype from the EnsDb of
 #'   \code{version}: hg38 = v86, hg19 = v75, mm10 = v79; without it, the
@@ -1651,7 +1651,7 @@ PolyAPlot <- function(
   # Blank space on the left of every track (fragment-based coverage): the
   # tracks are drawn a bit narrower so the transcript names, just right of the
   # axis, don't overlap the transcripts. Same x limits for all tracks.
-  if (is.null(left_space)) left_space <- if (use_fragments) 0.12 else 0
+  if (is.null(left_space)) left_space <- 0
   xlim_plot <- c(roi_start - left_space * (roi_end - roi_start), roi_end)
 
   gene_plot <- plot_annotation_from_granges(
@@ -1661,7 +1661,10 @@ PolyAPlot <- function(
     text_size       = text_size,
     axis_text_size  = axis_text_size,
     axis_title_size = axis_title_size,
-    xlim            = xlim_plot
+    xlim            = xlim_plot,
+    # fragment-based coverage: transcript names in the column of the track
+    # labels (between axis and panel), never over the transcripts
+    names_as_strips = use_fragments
   )
 
   # Check version
@@ -2182,6 +2185,10 @@ PolyAPlot <- function(
 #'   them left of the axis. Default \code{-80}.
 #' @param xlim x limits of the panel (to match the other tracks). \code{NULL}
 #'   (default): the region.
+#' @param names_as_strips Logical. One row per transcript with its name as a
+#'   left label between the axis and the panel -- the same column as the
+#'   group labels of the coverage tracks -- so the names never overlap the
+#'   transcripts. Default \code{FALSE} (names as y-axis labels).
 #'
 #' @return A \code{ggplot2} object with the gene annotation track
 #'
@@ -2196,7 +2203,8 @@ plot_annotation_from_granges <- function(
     axis_name_size  = 6,
     axis_title_size = 12,
     name_margin     = -80,
-    xlim            = NULL
+    xlim            = NULL,
+    names_as_strips = FALSE
 ) {
 
   # Convert to df and filter to roi
@@ -2299,6 +2307,48 @@ plot_annotation_from_granges <- function(
       axis.line.x.bottom = ggplot2::element_line(size = 0.1),
       axis.line.y.left   = ggplot2::element_line(size = 0.5)
     )
+
+  # Names as left labels (fragment-based coverage): one row per transcript,
+  # its name between the axis and the panel, in the column of the coverage
+  # group labels (the tracks are aligned), so it can't overlap the drawing.
+  if (isTRUE(names_as_strips)) {
+    backbone_df$tx_id <- factor(backbone_df$tx_id, levels = rev(tx_levels))
+    plot_df$tx_id     <- factor(plot_df$tx_id,     levels = rev(tx_levels))
+    gene_plot <- ggplot2::ggplot() +
+      ggplot2::geom_segment(
+        data = backbone_df,
+        ggplot2::aes(x = x, xend = xend, y = 0, yend = 0),
+        linewidth = 0.1, show.legend = FALSE
+      ) +
+      ggplot2::geom_segment(
+        data = plot_df,
+        ggplot2::aes(x = start, xend = end, y = 0, yend = 0, linewidth = block_h),
+        show.legend = FALSE
+      ) +
+      ggplot2::scale_linewidth_identity() +
+      ggplot2::facet_wrap(ggplot2::vars(tx_id), ncol = 1, strip.position = "left") +
+      ggplot2::coord_cartesian(xlim = if (is.null(xlim)) c(roi_start, roi_end) else xlim,
+                               ylim = c(-1, 1)) +
+      ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = 0.05)) +
+      ggplot2::labs(x = paste0(unique(annot_df$chromosome), " position (bp)"),
+                    y = paste0(gene, "\nTranscripts")) +
+      ggplot2::theme_classic(base_size = text_size) +
+      ggplot2::theme(
+        axis.ticks.y      = ggplot2::element_blank(),
+        axis.text.y       = ggplot2::element_blank(),
+        axis.text.x       = ggplot2::element_blank(),
+        axis.title.x      = ggplot2::element_blank(),
+        axis.ticks.x      = ggplot2::element_blank(),
+        axis.title        = ggplot2::element_text(size = axis_title_size),
+        axis.line.x.bottom = ggplot2::element_line(linewidth = 0.1),
+        axis.line.y.left   = ggplot2::element_line(linewidth = 0.5),
+        strip.placement   = "inside",
+        strip.background  = ggplot2::element_blank(),
+        strip.text.y.left = ggplot2::element_text(angle = 0, hjust = 1, size = axis_name_size,
+                                                  margin = ggplot2::margin(0, 3, 0, 3, unit = "pt")),
+        panel.spacing.y   = ggplot2::unit(0, "pt")
+      )
+  }
 
   return(gene_plot)
 }
