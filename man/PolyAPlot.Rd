@@ -50,6 +50,7 @@ PolyAPlot(
   left_space = NULL,
   transcript_text_size = 6,
   coverage_label_size = NULL,
+  coverage_label_hjust = 0.5,
   protein_coding_only = FALSE,
   site_labels = TRUE,
   show_stats = TRUE,
@@ -251,6 +252,10 @@ tracks (e.g. \code{"B6_Control"}): the left labels, or the legend with
 \code{overlay = TRUE}. \code{NULL} (default) keeps the current sizes
 (Signac's default for the labels, \code{legend_text_size} for the
 legend).}
+
+\item{coverage_label_hjust}{Horizontal alignment of the group names of the
+coverage tracks (left labels) in their column: \code{0} left,
+\code{0.5} centre (default), \code{1} right (next to the coverage).}
 
 \item{protein_coding_only}{Logical. Show only the protein-coding
 transcripts in the gene track (transcript biotype from the EnsDb of
