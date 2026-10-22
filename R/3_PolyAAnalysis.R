@@ -958,8 +958,9 @@ PolyAPipeline <- function(seurat_obj,
 #' @param split.by Metadata column name used to split the plot
 #' @param colors Named color palette for groups. If \code{NULL}, uses default colors.
 #'   Default \code{NULL}
-#' @param expand_bp Integer. Number of base pairs to expand the plotted region beyond
-#'   gene boundaries. Default \code{0}
+#' @param expand_bp Number of base pairs added to the plotted region: one
+#'   value for both sides, or two values \code{c(left, right)} (left = lower
+#'   genomic position, as plotted), e.g. \code{c(500, 3000)}. Default \code{0}
 #' @param polyARegion Logical. Whether to zoom the coverage plot over changing polyA
 #'   sites only. Default \code{FALSE}
 #' @param highlight_region Logical. Whether to highlight the significant proximal/distal
@@ -1070,6 +1071,8 @@ PolyAPipeline <- function(seurat_obj,
 #'   (\code{dedup_umi}, \code{normalize}, \code{overlay}...) the transcript
 #'   names sit in their own column, aligned with the track labels, so no extra
 #'   space is needed.
+#' @param transcript_text_size Text size of the transcript names in the gene
+#'   track. Default \code{6}.
 #' @param protein_coding_only Logical. Show only the protein-coding
 #'   transcripts in the gene track (transcript biotype from the EnsDb of
 #'   \code{version}: hg38 = v86, hg19 = v75, mm10 = v79; without it, the
@@ -1162,6 +1165,7 @@ PolyAPlot <- function(
     usage_sites       = c("significant", "all"),
     legend_position = NULL,
     left_space      = NULL,
+    transcript_text_size = 6,
     protein_coding_only = FALSE,
     site_labels     = TRUE,
     show_stats      = TRUE,
@@ -1480,7 +1484,17 @@ PolyAPlot <- function(
   }
 
   # Expand roi by specified bp
-  roi_expanded <- roi + expand_bp
+  # expand_bp: one value (both sides) or c(left, right) in plot coordinates
+  if (!is.numeric(expand_bp) || !length(expand_bp) %in% 1:2 || anyNA(expand_bp)) {
+    stop("`expand_bp` must be one number or two numbers c(left, right).")
+  }
+  if (length(expand_bp) == 1) expand_bp <- rep(expand_bp, 2)
+  roi_expanded <- GenomicRanges::GRanges(
+    seqnames = GenomicRanges::seqnames(roi),
+    ranges   = IRanges::IRanges(start = max(1, IRanges::start(roi) - expand_bp[1]),
+                                end   = IRanges::end(roi) + expand_bp[2]),
+    strand   = GenomicRanges::strand(roi)
+  )
   roi_start <- IRanges::start(roi_expanded)
   roi_end <- IRanges::end(roi_expanded)
 
@@ -1661,6 +1675,7 @@ PolyAPlot <- function(
     text_size       = text_size,
     axis_text_size  = axis_text_size,
     axis_title_size = axis_title_size,
+    axis_name_size  = transcript_text_size,
     xlim            = xlim_plot,
     # fragment-based coverage: transcript names in the column of the track
     # labels (between axis and panel), never over the transcripts

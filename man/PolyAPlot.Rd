@@ -48,6 +48,7 @@ PolyAPlot(
   usage_sites = c("significant", "all"),
   legend_position = NULL,
   left_space = NULL,
+  transcript_text_size = 6,
   protein_coding_only = FALSE,
   site_labels = TRUE,
   show_stats = TRUE,
@@ -94,8 +95,9 @@ column). If \code{NULL} (default), all cell types are used.}
 \item{colors}{Named color palette for groups. If \code{NULL}, uses default colors.
 Default \code{NULL}}
 
-\item{expand_bp}{Integer. Number of base pairs to expand the plotted region beyond
-gene boundaries. Default \code{0}}
+\item{expand_bp}{Number of base pairs added to the plotted region: one
+value for both sides, or two values \code{c(left, right)} (left = lower
+genomic position, as plotted), e.g. \code{c(500, 3000)}. Default \code{0}}
 
 \item{polyARegion}{Logical. Whether to zoom the coverage plot over changing polyA
 sites only. Default \code{FALSE}}
@@ -239,6 +241,9 @@ fraction of the region width (the tracks are drawn a bit narrower).
 (\code{dedup_umi}, \code{normalize}, \code{overlay}...) the transcript
 names sit in their own column, aligned with the track labels, so no extra
 space is needed.}
+
+\item{transcript_text_size}{Text size of the transcript names in the gene
+track. Default \code{6}.}
 
 \item{protein_coding_only}{Logical. Show only the protein-coding
 transcripts in the gene track (transcript biotype from the EnsDb of
