@@ -65,6 +65,7 @@
                                  usage_panel, text_size, axis_text_size,
                                  axis_title_size, strip_text_size,
                                  legend_text_size, verbose,
+                                 coverage_label_size = NULL,
                                  legend_position = "top", usage_type = "bar",
                                  gene = NULL, expression_panel = FALSE,
                                  expression_source = "RNA", usage_scale = "percent") {
@@ -189,6 +190,8 @@
   legend_axis <- isTRUE(overlay) && identical(legend_position, "axis")
   if (identical(legend_position, "axis") && !legend_axis) legend_position <- "top"
   key_pt <- 10
+  # size of the group names (left labels without overlay, legend with overlay)
+  lab_size <- if (is.null(coverage_label_size)) legend_text_size else coverage_label_size
 
   plots <- lapply(names(tracks), function(tr) {
     d  <- sig[sig$track == tr, , drop = FALSE]
@@ -257,7 +260,7 @@
         # vertical when the legend sits at the side (left/right)
         legend.direction  = if (is.character(legend_position) &&
                                 legend_position[1] %in% c("left", "right")) "vertical" else "horizontal",
-        legend.text       = ggplot2::element_text(size = legend_text_size)
+        legend.text       = ggplot2::element_text(size = lab_size)
       )
     if (legend_axis) {
       # A left strip (inside, between axis and panel, like the group labels
@@ -276,14 +279,14 @@
           strip.placement   = "inside",
           strip.background  = ggplot2::element_blank(),
           strip.text.y.left = ggplot2::element_text(
-            angle = 0, hjust = 0, size = legend_text_size, colour = "transparent",
+            angle = 0, hjust = 0, size = lab_size, colour = "transparent",
             margin = ggplot2::margin(0, 3, 0, key_pt + 12, unit = "pt")),
           legend.justification = c(1, 0.5),
           legend.direction     = "vertical",
           legend.key.size      = ggplot2::unit(key_pt, "pt"),
           legend.margin        = ggplot2::margin(0, 3, 0, 3, unit = "pt"),
           legend.background    = ggplot2::element_blank(),
-          legend.text          = ggplot2::element_text(size = legend_text_size)
+          legend.text          = ggplot2::element_text(size = lab_size)
         ) +
         leg_pos
     }
@@ -301,7 +304,7 @@
           axis.text.y       = ggplot2::element_blank(),
           axis.title.y      = ggplot2::element_text(size = axis_title_size),
           strip.background  = ggplot2::element_blank(),
-          strip.text.y.left = ggplot2::element_text(angle = 0),
+          strip.text.y.left = ggplot2::element_text(angle = 0, size = coverage_label_size),
           panel.spacing.y   = ggplot2::unit(0, "lines"),
           legend.position   = "none"
         )

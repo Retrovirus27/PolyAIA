@@ -49,6 +49,7 @@ PolyAPlot(
   legend_position = NULL,
   left_space = NULL,
   transcript_text_size = 6,
+  coverage_label_size = NULL,
   protein_coding_only = FALSE,
   site_labels = TRUE,
   show_stats = TRUE,
@@ -244,6 +245,12 @@ space is needed.}
 
 \item{transcript_text_size}{Text size of the transcript names in the gene
 track. Default \code{6}.}
+
+\item{coverage_label_size}{Text size of the group names of the coverage
+tracks (e.g. \code{"B6_Control"}): the left labels, or the legend with
+\code{overlay = TRUE}. \code{NULL} (default) keeps the current sizes
+(Signac's default for the labels, \code{legend_text_size} for the
+legend).}
 
 \item{protein_coding_only}{Logical. Show only the protein-coding
 transcripts in the gene track (transcript biotype from the EnsDb of
