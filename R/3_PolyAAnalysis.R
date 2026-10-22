@@ -1078,9 +1078,6 @@ PolyAPipeline <- function(seurat_obj,
 #'   \code{overlay = TRUE}. \code{NULL} (default) keeps the current sizes
 #'   (Signac's default for the labels, \code{legend_text_size} for the
 #'   legend).
-#' @param coverage_label_hjust Horizontal alignment of the group names of the
-#'   coverage tracks (left labels) in their column: \code{0} left,
-#'   \code{0.5} centre (default), \code{1} right (next to the coverage).
 #' @param protein_coding_only Logical. Show only the protein-coding
 #'   transcripts in the gene track (transcript biotype from the EnsDb of
 #'   \code{version}: hg38 = v86, hg19 = v75, mm10 = v79; without it, the
@@ -1175,7 +1172,6 @@ PolyAPlot <- function(
     left_space      = NULL,
     transcript_text_size = 6,
     coverage_label_size  = NULL,
-    coverage_label_hjust = 0.5,
     protein_coding_only = FALSE,
     site_labels     = TRUE,
     show_stats      = TRUE,
@@ -1897,7 +1893,6 @@ PolyAPlot <- function(
       axis_text_size = axis_text_size, axis_title_size = axis_title_size,
       strip_text_size = strip_text_size, legend_text_size = legend_text_size,
       coverage_label_size = coverage_label_size,
-      coverage_label_hjust = coverage_label_hjust,
       verbose = verbose,
       legend_position = legend_position, usage_type = usage_type,
       gene = gene, expression_panel = expression_panel,
@@ -2032,9 +2027,10 @@ PolyAPlot <- function(
         plot.tag.position = "top"
       )
   })
-  cov_plot_norm <- lapply(cov_plot_norm, function(p) p + ggplot2::theme(
-    strip.text.y.left = ggplot2::element_text(angle = 0, size = coverage_label_size,
-                                              hjust = coverage_label_hjust)))
+  if (!is.null(coverage_label_size)) {
+    cov_plot_norm <- lapply(cov_plot_norm, function(p) p + ggplot2::theme(
+      strip.text.y.left = ggplot2::element_text(angle = 0, size = coverage_label_size)))
+  }
   names(cov_plot_norm) <- cell_types
 
   }  # end Signac coverage path

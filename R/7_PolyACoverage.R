@@ -66,7 +66,6 @@
                                  axis_title_size, strip_text_size,
                                  legend_text_size, verbose,
                                  coverage_label_size = NULL,
-                                 coverage_label_hjust = 0.5,
                                  legend_position = "top", usage_type = "bar",
                                  gene = NULL, expression_panel = FALSE,
                                  expression_source = "RNA", usage_scale = "percent") {
@@ -249,8 +248,7 @@
         axis.line.x       = ggplot2::element_blank(),
         axis.text.y       = ggplot2::element_text(size = axis_text_size),
         axis.title.y      = ggplot2::element_text(size = axis_title_size),
-        strip.text.y.left = ggplot2::element_text(angle = 0, size = strip_text_size,
-                                                  hjust = coverage_label_hjust),
+        strip.text.y.left = ggplot2::element_text(angle = 0, size = strip_text_size),
         strip.background  = ggplot2::element_blank(),
         strip.placement   = "outside",
         panel.spacing.y   = ggplot2::unit(0, "lines"),
@@ -306,8 +304,7 @@
           axis.text.y       = ggplot2::element_blank(),
           axis.title.y      = ggplot2::element_text(size = axis_title_size),
           strip.background  = ggplot2::element_blank(),
-          strip.text.y.left = ggplot2::element_text(angle = 0, size = coverage_label_size,
-                                                    hjust = coverage_label_hjust),
+          strip.text.y.left = ggplot2::element_text(angle = 0, size = coverage_label_size),
           panel.spacing.y   = ggplot2::unit(0, "lines"),
           legend.position   = "none"
         )
