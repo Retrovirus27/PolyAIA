@@ -586,7 +586,8 @@ QCPlot <- function(
 #' @param show_numbers Logical. If TRUE, includes cell counts in labels. Default is FALSE
 #' @param n_col Number of columns for facet layout. Default is NULL (automatic)
 #' @param n_row Number of rows for facet layout. Default is NULL (automatic)
-#' @param sizes Numeric value for base font size. Default is c(9,0.5,11,10,10) for the following: base_size, base_line_size, legend.title, legend.text, strip.text, strip.text.x and strip.text.y
+#' @param sizes Numeric vector of sizes. Default is c(9,0.5,11,10,10,7) for the following: base_size, base_line_size, legend.title, legend.text, strip text (strip.text, strip.text.x and strip.text.y) and the group labels of \code{show_labels} (geom_text_repel size, in mm as in ggplot2). A vector of 5 keeps the label size at 7.
+#' @param label_bold Logical. Bold group labels (\code{show_labels}). Default \code{TRUE}.
 #' @param shuffle Logical. Draw the cells in random order, so the groups
 #'   (e.g. two strains or studies) are interleaved instead of one group
 #'   covering the other. Default \code{TRUE}.
@@ -618,7 +619,8 @@ UmapPlot <-
            show_numbers = FALSE,
            n_col = NULL,
            n_row = NULL,
-           sizes = c(9,0.5,11,10,10),
+           sizes = c(9,0.5,11,10,10,7),
+           label_bold = TRUE,
            shuffle = TRUE,
            seed = 1) {
 
@@ -790,7 +792,8 @@ UmapPlot <-
         p <- p + ggrepel::geom_text_repel(
           data = label_df,
           ggplot2::aes(x = x_mean, y = y_mean, label = label_text),
-          size = 7, color = "black", fontface = "bold",
+          size = if (length(sizes) >= 6) sizes[6] else 7, color = "black",
+          fontface = if (isTRUE(label_bold)) "bold" else "plain",
           box.padding = 0.3, max.overlaps = Inf,
           inherit.aes = FALSE
         )
