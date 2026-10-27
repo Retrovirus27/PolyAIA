@@ -304,14 +304,33 @@ PseudobulkFilter <- function(seu,
 #' (control) and \code{group2.*} (treatment), so every comparison returns the
 #' same columns.
 #'
+#' Covariates: Libra's pseudobulk methods do not take covariates
+#' (\code{latent_vars} only reaches its single-cell methods). With
+#' \code{covariates}, edgeR is run directly on the same pseudobulk (sum of
+#' counts per cell type x group x replicate, same filter, TMM normalisation,
+#' \code{estimateDisp()}), with design \code{~ covariates + group}, and the
+#' group coefficient is tested (\code{de_type = "LRT"}: \code{glmLRT()};
+#' \code{"QLF"}: \code{glmQLFTest()}). Covariates that are constant within a
+#' block (e.g. \code{Sex} when comparing within one sex) are dropped for that
+#' block; blocks where the design is not estimable (a covariate confounded
+#' with the group, or too few replicates) are skipped with a warning. Same
+#' output columns, plus \code{covariates} (the terms used in the block).
+#'
 #' @inheritParams PseudobulkFilter
 #' @param de_family,de_method,de_type Passed to \code{Libra::run_de()}.
 #'   Defaults \code{"pseudobulk"} / \code{"edgeR"} / \code{"LRT"}. Examples:
 #'   \code{de_method = "DESeq2", de_type = "Wald"};
 #'   \code{de_method = "limma", de_type = "voom"}.
+#' @param covariates Optional metadata columns to adjust for (e.g.
+#'   \code{c("Age", "PMI", "Sequencing")}), constant within each replicate.
+#'   Numeric columns enter the model as numbers, the others as factors.
+#'   Requires \code{de_method = "edgeR"} (see Details). Default \code{NULL}
+#'   (Libra, no covariates).
 #' @param libra_min_cells Libra's own \code{min_cells} (a filter inside
 #'   \code{run_de()}, different from this function's \code{min_cells}).
-#'   \code{NULL} (default) keeps Libra's default.
+#'   \code{NULL} (default) keeps Libra's default. With \code{covariates}, the
+#'   same rule is applied: replicates with fewer cells (default 3) are left
+#'   out of the block.
 #' @param return_filter If \code{TRUE}, also return the
 #'   \code{\link{PseudobulkFilter}()} object (for \code{\link{QCDensity}()}).
 #'   Default \code{FALSE}.
@@ -335,6 +354,12 @@ PseudobulkFilter <- function(seu,
 #'                    return_filter = TRUE)
 #' head(degs$de)
 #' QCDensity(degs$filter, stage = "after", rows_by_condition = TRUE)
+#'
+#' # edgeR adjusted for covariates
+#' degs_cov <- DEGsMatrix(seu, comparisons,
+#'                        celltype_col = "Subpopulation",
+#'                        label_col = "contrast", replicate_col = "Sample",
+#'                        covariates = c("Age", "PMI", "Sequencing"))
 #' }
 #'
 #' @export
@@ -353,11 +378,19 @@ DEGsMatrix <- function(seu,
                        de_family         = "pseudobulk",
                        de_method         = "edgeR",
                        de_type           = "LRT",
+                       covariates        = NULL,
                        libra_min_cells   = NULL,
                        return_filter     = FALSE,
                        verbose           = TRUE,
                        ...) {
-  if (!requireNamespace("Libra", quietly = TRUE)) {
+  use_cov <- length(covariates) > 0
+  if (use_cov) {
+    if (de_method != "edgeR" || !de_type %in% c("LRT", "QLF")) {
+      stop("`covariates` are supported with de_method = \"edgeR\" and de_type = \"LRT\" or \"QLF\".")
+    }
+    miss <- setdiff(covariates, colnames(seu@meta.data))
+    if (length(miss)) stop("Covariate column(s) not in seu@meta.data: ", paste(miss, collapse = ", "))
+  } else if (!requireNamespace("Libra", quietly = TRUE)) {
     stop("Package 'Libra' is required: remotes::install_github('neurorestore/Libra')")
   }
 
@@ -374,8 +407,13 @@ DEGsMatrix <- function(seu,
   blocks <- flt$summary[flt$summary$status == "ok" & flt$summary$n_kept > 0, , drop = FALSE]
 
   if (verbose) {
-    message("Running Libra (", de_family, " / ", de_method, " / ", de_type,
-            ") on ", nrow(blocks), " block(s)...")
+    if (use_cov) {
+      message("Running edgeR (", de_type, ") with covariates ",
+              paste(covariates, collapse = " + "), " on ", nrow(blocks), " block(s)...")
+    } else {
+      message("Running Libra (", de_family, " / ", de_method, " / ", de_type,
+              ") on ", nrow(blocks), " block(s)...")
+    }
   }
 
   libra_args <- c(
@@ -396,7 +434,107 @@ DEGsMatrix <- function(seu,
   }
 
   md_all <- seu@meta.data
-  res <- lapply(seq_len(nrow(blocks)), function(i) {
+
+  # ---- edgeR with covariates (Libra's pseudobulk path has no covariates) ----
+  if (use_cov) {
+    # one row of covariates per replicate
+    cov_tab <- unique(data.frame(rep = as.character(md_all[[replicate_col]]),
+                                 md_all[, covariates, drop = FALSE],
+                                 stringsAsFactors = FALSE, check.names = FALSE))
+    dup <- unique(cov_tab$rep[duplicated(cov_tab$rep)])
+    if (length(dup)) {
+      stop("Covariates are not constant within replicate(s): ",
+           paste(utils::head(dup, 5), collapse = ", "),
+           ". Each '", replicate_col, "' must have one value of each covariate.")
+    }
+    min_cells_rep <- if (is.null(libra_min_cells)) 3 else libra_min_cells
+    min_reps      <- if (!is.null(list(...)$min_reps)) list(...)$min_reps else 2
+
+    res <- lapply(seq_len(nrow(blocks)), function(i) {
+      b <- blocks[i, ]
+      genes <- flt$kept$feature[flt$kept$Cells == b$Cells & flt$kept$Condition == b$Condition]
+      s <- flt$sample_meta[flt$sample_meta$Cells == b$Cells &
+                             flt$sample_meta$label %in% c(b$control, b$treatment) &
+                             flt$sample_meta$n_cells >= min_cells_rep, , drop = FALSE]
+      grp <- factor(ifelse(s$label == b$control, "control", "treatment"),
+                    levels = c("control", "treatment"))
+      if (any(table(grp) < min_reps)) {
+        warning(sprintf("edgeR skipped for %s | %s: fewer than %d replicates in a group.",
+                        b$Condition, b$Cells, min_reps), call. = FALSE)
+        return(NULL)
+      }
+
+      cv <- cov_tab[match(s$replicate, cov_tab$rep), covariates, drop = FALSE]
+      if (anyNA(cv)) {
+        warning(sprintf("edgeR skipped for %s | %s: missing covariate values.",
+                        b$Condition, b$Cells), call. = FALSE)
+        return(NULL)
+      }
+      varies <- vapply(cv, function(v) length(unique(v)) > 1, logical(1))
+      used   <- covariates[varies]
+      if (verbose && any(!varies)) {
+        message(sprintf("%s | %s: constant covariate(s) dropped: %s",
+                        b$Condition, b$Cells, paste(covariates[!varies], collapse = ", ")))
+      }
+      dd <- cv[, varies, drop = FALSE]
+      dd[] <- lapply(dd, function(v) if (is.numeric(v)) v else factor(v))
+      dd$group <- grp
+      design <- stats::model.matrix(~ ., data = dd)
+      if (qr(design)$rank < ncol(design) || nrow(design) <= ncol(design)) {
+        warning(sprintf(paste0("edgeR skipped for %s | %s: design not estimable (covariate ",
+                               "confounded with the group, or too few replicates for ",
+                               "%d coefficients)."),
+                        b$Condition, b$Cells, ncol(design)), call. = FALSE)
+        return(NULL)
+      }
+
+      out <- tryCatch({
+        y <- edgeR::DGEList(counts = as.matrix(flt$pseudobulk[genes, s$sample_id, drop = FALSE]),
+                            group = grp)
+        y <- edgeR::calcNormFactors(y, method = "TMM")
+        y <- edgeR::estimateDisp(y, design)
+        test <- if (de_type == "QLF") {
+          edgeR::glmQLFTest(edgeR::glmQLFit(y, design), coef = ncol(design))
+        } else {
+          edgeR::glmLRT(edgeR::glmFit(y, design), coef = ncol(design))
+        }
+        tt <- edgeR::topTags(test, n = Inf, sort.by = "none")$table[genes, , drop = FALSE]
+
+        # per-group % of expressing cells and mean counts (as Libra reports)
+        cells <- rownames(md_all)[as.character(md_all[[celltype_col]]) == b$Cells &
+                                    as.character(md_all[[label_col]]) %in% c(b$treatment, b$control)]
+        lab <- as.character(md_all[cells, label_col])
+        m1  <- cnt[genes, cells[lab == b$control],   drop = FALSE]
+        m2  <- cnt[genes, cells[lab == b$treatment], drop = FALSE]
+
+        data.frame(
+          cell_type  = b$Cells,
+          gene       = genes,
+          avg_logFC  = tt$logFC,
+          group1.pct = round(Matrix::rowMeans(m1 > 0), 3),
+          group2.pct = round(Matrix::rowMeans(m2 > 0), 3),
+          group1.exp = Matrix::rowMeans(m1),
+          group2.exp = Matrix::rowMeans(m2),
+          p_val      = tt$PValue,
+          p_val_adj  = stats::p.adjust(tt$PValue, method = "BH"),
+          de_family  = "pseudobulk",
+          de_method  = "edgeR",
+          de_type    = de_type,
+          group1     = b$control,
+          group2     = b$treatment,
+          Condition  = b$Condition,
+          n_tested   = length(genes),
+          covariates = paste(used, collapse = " + "),
+          stringsAsFactors = FALSE, row.names = NULL
+        )
+      }, error = function(e) {
+        warning(sprintf("edgeR failed for %s | %s: %s",
+                        b$Condition, b$Cells, conditionMessage(e)), call. = FALSE)
+        NULL
+      })
+      out
+    })
+  } else res <- lapply(seq_len(nrow(blocks)), function(i) {
     b <- blocks[i, ]
     genes <- flt$kept$feature[flt$kept$Cells == b$Cells &
                                 flt$kept$Condition == b$Condition]

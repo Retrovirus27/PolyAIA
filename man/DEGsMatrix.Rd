@@ -20,6 +20,7 @@ DEGsMatrix(
   de_family = "pseudobulk",
   de_method = "edgeR",
   de_type = "LRT",
+  covariates = NULL,
   libra_min_cells = NULL,
   return_filter = FALSE,
   verbose = TRUE,
@@ -71,9 +72,17 @@ Defaults \code{"pseudobulk"} / \code{"edgeR"} / \code{"LRT"}. Examples:
 \code{de_method = "DESeq2", de_type = "Wald"};
 \code{de_method = "limma", de_type = "voom"}.}
 
+\item{covariates}{Optional metadata columns to adjust for (e.g.
+\code{c("Age", "PMI", "Sequencing")}), constant within each replicate.
+Numeric columns enter the model as numbers, the others as factors.
+Requires \code{de_method = "edgeR"} (see Details). Default \code{NULL}
+(Libra, no covariates).}
+
 \item{libra_min_cells}{Libra's own \code{min_cells} (a filter inside
 \code{run_de()}, different from this function's \code{min_cells}).
-\code{NULL} (default) keeps Libra's default.}
+\code{NULL} (default) keeps Libra's default. With \code{covariates}, the
+same rule is applied: replicates with fewer cells (default 3) are left
+out of the block.}
 
 \item{return_filter}{If \code{TRUE}, also return the
 \code{\link{PseudobulkFilter}()} object (for \code{\link{QCDensity}()}).
@@ -106,6 +115,18 @@ Libra names its per-group columns after the group values (e.g.
 \code{"B6_Control.pct"}); these are renamed by name to \code{group1.*}
 (control) and \code{group2.*} (treatment), so every comparison returns the
 same columns.
+
+Covariates: Libra's pseudobulk methods do not take covariates
+(\code{latent_vars} only reaches its single-cell methods). With
+\code{covariates}, edgeR is run directly on the same pseudobulk (sum of
+counts per cell type x group x replicate, same filter, TMM normalisation,
+\code{estimateDisp()}), with design \code{~ covariates + group}, and the
+group coefficient is tested (\code{de_type = "LRT"}: \code{glmLRT()};
+\code{"QLF"}: \code{glmQLFTest()}). Covariates that are constant within a
+block (e.g. \code{Sex} when comparing within one sex) are dropped for that
+block; blocks where the design is not estimable (a covariate confounded
+with the group, or too few replicates) are skipped with a warning. Same
+output columns, plus \code{covariates} (the terms used in the block).
 }
 \examples{
 \dontrun{
@@ -116,6 +137,12 @@ degs <- DEGsMatrix(seu, comparisons,
                    return_filter = TRUE)
 head(degs$de)
 QCDensity(degs$filter, stage = "after", rows_by_condition = TRUE)
+
+# edgeR adjusted for covariates
+degs_cov <- DEGsMatrix(seu, comparisons,
+                       celltype_col = "Subpopulation",
+                       label_col = "contrast", replicate_col = "Sample",
+                       covariates = c("Age", "PMI", "Sequencing"))
 }
 
 }
