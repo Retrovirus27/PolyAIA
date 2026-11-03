@@ -51,7 +51,7 @@ using one or two reference datasets.
 \details{
 One sample per call. To get the same object as
   \code{\link{UploadSce}()}, merge the samples, add their metadata and run
-  \code{\link{AddQCMetrics}()}, \code{\link{AnnotateRNA}()} and
+  \code{\link{AddQCMetrics}()}, \code{\link{AnnotateGenes}()} and
   \code{\link{AzimuthAnnotation}()}.
 }
 \examples{

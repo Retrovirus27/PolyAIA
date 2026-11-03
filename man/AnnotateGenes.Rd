@@ -15,11 +15,16 @@ AnnotateGenes(
 )
 }
 \arguments{
-\item{data}{Gene names/IDs to annotate (character vector or \code{rownames}
-from a Seurat object)}
+\item{data}{Either gene names/IDs (character vector), which returns the
+annotation table, or a Seurat object, whose RNA assay is annotated (the
+table stored in the assay's feature metadata with the gene id in column
+\code{ID}, as \code{UploadSce()} does) and which is returned. Use the
+Seurat form after \code{\link{UploadData}()} (and merging the samples).}
 
 \item{IDtype}{Type of gene identifier.
-Options: \code{"SYMBOL"}, \code{"ENTREZID"}, or \code{"ENSEMBL"}}
+Options: \code{"SYMBOL"}, \code{"ENTREZID"}, or \code{"ENSEMBL"}. For a
+Seurat object, if not given it is detected from the gene names
+(\code{ENS...} = \code{"ENSEMBL"}, otherwise \code{"SYMBOL"}).}
 
 \item{species}{Species for annotation. Options: \code{"human"} or \code{"mouse"}}
 
@@ -37,9 +42,11 @@ Default \code{TRUE}}
 \item{verbose}{Logical. Whether to print progress messages. Default \code{TRUE}}
 }
 \value{
-A \code{data.frame} with gene annotations. If \code{include_ranges = TRUE},
-  genomic coordinates are appended from the corresponding \code{TxDb} package
-  (\code{genome_build} must be specified)
+For a character vector, a \code{data.frame} with gene annotations.
+  If \code{include_ranges = TRUE}, genomic coordinates are appended from the
+  corresponding \code{TxDb} package (\code{genome_build} must be
+  specified). For a Seurat object, the object with the annotation in
+  \code{seurat_obj[["RNA"]]} feature metadata.
 }
 \description{
 Annotate gene features with genomic information
@@ -56,5 +63,8 @@ annot <- AnnotateGenes(gene_ids,
                        IDtype = "ENSEMBL",
                        species = "mouse",
                        include_ranges = FALSE)
+
+# Annotate the RNA assay of a Seurat object (e.g. after UploadData())
+seurat_obj <- AnnotateGenes(seurat_obj, species = "human", genome_build = "hg38")
 }
 }

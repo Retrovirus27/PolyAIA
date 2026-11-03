@@ -210,9 +210,9 @@ UploadSce <- function(data_dir = "Data/SCE_1/",
   seurat_obj <- AddQCMetrics(seurat_obj, species = species, ensembl_ids = TRUE)
 
   # Gene annotation (symbol, biotype, coordinates, transcripts) in the RNA assay
-  seurat_obj <- AnnotateRNA(seurat_obj, species = species, genome_build = genome_build,
-                            IDtype = IDtype, columns = columns,
-                            include_ranges = include_ranges, verbose = verbose)
+  seurat_obj <- AnnotateGenes(seurat_obj, IDtype = IDtype, species = species,
+                              genome_build = genome_build, columns = columns,
+                              include_ranges = include_ranges, verbose = verbose)
 
   # Run Azimuth cell type annotation
   if (run_azimuth) {
@@ -349,41 +349,12 @@ AddQCMetrics <- function(seurat_obj, species = c("human", "mouse"), ensembl_ids 
 }
 
 
-#' Gene annotation of the RNA assay
-#'
-#' Annotates the genes of the RNA assay with \code{\link{AnnotateGenes}()}
-#' (symbol, biotype and, with \code{include_ranges = TRUE}, chromosome,
-#' start, end, strand and the transcripts) and stores it in the assay's
-#' feature metadata, with the gene id in column \code{ID}. \code{DEPsMatrix()}
-#' and \code{PolyAPlot()} read the genes' coordinates and transcripts from
-#' there. \code{\link{UploadSce}()} runs it; use it after
-#' \code{\link{UploadData}()} (and merging the samples).
-#'
-#' @inheritParams AnnotateGenes
-#' @param seurat_obj A Seurat object with an RNA assay.
-#' @param IDtype Gene identifier type of the RNA gene names: \code{"ENSEMBL"}
-#'   (default), \code{"SYMBOL"} or \code{"ENTREZID"}.
-#'
-#' @return \code{seurat_obj} with the annotation in
-#'   \code{seurat_obj[["RNA"]]} feature metadata.
-#'
-#' @examples
-#' \dontrun{
-#' seurat_obj <- AnnotateRNA(seurat_obj, species = "human", genome_build = "hg38")
-#' }
-#'
-#' @export
-AnnotateRNA <- function(seurat_obj,
-                        species        = c("human", "mouse"),
-                        genome_build   = c("hg38", "hg19", "mm10", "mm39"),
-                        IDtype         = c("ENSEMBL", "SYMBOL", "ENTREZID"),
-                        columns        = c("SYMBOL", "GENETYPE", "ENTREZID", "ENZYME", "ENSEMBL"),
-                        include_ranges = TRUE,
-                        verbose        = TRUE) {
-  species      <- match.arg(species)
-  genome_build <- match.arg(genome_build)
-  IDtype       <- match.arg(IDtype)
-
+# Annotation of the RNA assay of a Seurat object (AnnotateGenes(<Seurat>)):
+# the AnnotateGenes() table stored in the assay's feature metadata, gene id in
+# column `ID` (read by DEPsMatrix() and PolyAPlot()).
+# @noRd
+.AnnotateRNAAssay <- function(seurat_obj, IDtype, species, genome_build, columns,
+                              include_ranges, verbose) {
   rna   <- seurat_obj[["RNA"]]
   genes <- rownames(rna)
 
@@ -419,10 +390,15 @@ AnnotateRNA <- function(seurat_obj,
 
 #' Annotate gene features with genomic information
 #'
-#' @param data Gene names/IDs to annotate (character vector or \code{rownames}
-#'   from a Seurat object)
+#' @param data Either gene names/IDs (character vector), which returns the
+#'   annotation table, or a Seurat object, whose RNA assay is annotated (the
+#'   table stored in the assay's feature metadata with the gene id in column
+#'   \code{ID}, as \code{UploadSce()} does) and which is returned. Use the
+#'   Seurat form after \code{\link{UploadData}()} (and merging the samples).
 #' @param IDtype Type of gene identifier.
-#'   Options: \code{"SYMBOL"}, \code{"ENTREZID"}, or \code{"ENSEMBL"}
+#'   Options: \code{"SYMBOL"}, \code{"ENTREZID"}, or \code{"ENSEMBL"}. For a
+#'   Seurat object, if not given it is detected from the gene names
+#'   (\code{ENS...} = \code{"ENSEMBL"}, otherwise \code{"SYMBOL"}).
 #' @param species Species for annotation. Options: \code{"human"} or \code{"mouse"}
 #' @param genome_build Genome build for range annotation.
 #'   Options: \code{"hg38"}, \code{"hg19"}, \code{"mm10"}, or \code{"mm39"}
@@ -434,9 +410,11 @@ AnnotateRNA <- function(seurat_obj,
 #'   Default \code{TRUE}
 #' @param verbose Logical. Whether to print progress messages. Default \code{TRUE}
 #'
-#' @return A \code{data.frame} with gene annotations. If \code{include_ranges = TRUE},
-#'   genomic coordinates are appended from the corresponding \code{TxDb} package
-#'   (\code{genome_build} must be specified)
+#' @return For a character vector, a \code{data.frame} with gene annotations.
+#'   If \code{include_ranges = TRUE}, genomic coordinates are appended from the
+#'   corresponding \code{TxDb} package (\code{genome_build} must be
+#'   specified). For a Seurat object, the object with the annotation in
+#'   \code{seurat_obj[["RNA"]]} feature metadata.
 #'
 #' @export
 #'
@@ -452,6 +430,9 @@ AnnotateRNA <- function(seurat_obj,
 #'                        IDtype = "ENSEMBL",
 #'                        species = "mouse",
 #'                        include_ranges = FALSE)
+#'
+#' # Annotate the RNA assay of a Seurat object (e.g. after UploadData())
+#' seurat_obj <- AnnotateGenes(seurat_obj, species = "human", genome_build = "hg38")
 #' }
 AnnotateGenes <- function(
     data,
@@ -464,9 +445,20 @@ AnnotateGenes <- function(
 ) {
 
   # Match arguments
+  id_given <- !missing(IDtype)
   IDtype <- match.arg(IDtype)
   species <- match.arg(species)
   genome_build <- match.arg(genome_build)
+
+  # Seurat object: annotate its RNA assay and return the object
+  if (inherits(data, "Seurat")) {
+    if (!id_given) {
+      IDtype <- if (mean(grepl("^ENS", rownames(data[["RNA"]]))) > 0.5) "ENSEMBL" else "SYMBOL"
+    }
+    return(.AnnotateRNAAssay(data, IDtype = IDtype, species = species,
+                             genome_build = genome_build, columns = columns,
+                             include_ranges = include_ranges, verbose = verbose))
+  }
 
   # Validate genome_build vs species
   human_builds <- c("hg38", "hg19")
@@ -647,7 +639,7 @@ AnnotateGenes <- function(
 #'
 #' @details One sample per call. To get the same object as
 #'   \code{\link{UploadSce}()}, merge the samples, add their metadata and run
-#'   \code{\link{AddQCMetrics}()}, \code{\link{AnnotateRNA}()} and
+#'   \code{\link{AddQCMetrics}()}, \code{\link{AnnotateGenes}()} and
 #'   \code{\link{AzimuthAnnotation}()}.
 #'
 #' @examples
