@@ -6,7 +6,8 @@ utils::globalVariables(c(
   # RED-score / DEPsMatrix pipeline (R/3_PolyAAnalysis.R)
   "Ensembl_ID", "ensembl_gene_id",
   "RED_LRT_pval", "RED_LRT_padj",
-  "RED_LRT_cov_pval", "RED_LRT_cov_padj",
+  "RED_QL_pval", "RED_QL_padj", "RED_dispersion", "RED_test",
+  "lrt_dev", "lrt_df", "lrt_df_res", "lrt_reads",
   "gDPAU", "DPAU",
   # RED pair-type assignment (R/3_PolyAAnalysis.R)
   "RED_type", "p_region", "d_region",

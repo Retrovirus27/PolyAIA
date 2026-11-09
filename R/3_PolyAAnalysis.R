@@ -2160,7 +2160,7 @@ PolyAPlot <- function(
   if (isTRUE(show_stats) && n_pairs > 0) {
     st <- results[!is.na(results$p_peak) & !is.na(results$d_peak), , drop = FALSE]
     pk <- match(paste(st$p_peak, st$d_peak), paste(pair_tbl$p_peak, pair_tbl$d_peak))
-    fdr_try <- unique(c(fdr_col, "PASTA_padj", "RED_LRT_padj", "RED_fisher_padj", "RED_ttest_padj"))
+    fdr_try <- unique(c(fdr_col, "PASTA_padj", "RED_LRT_padj", "RED_QL_padj", "RED_fisher_padj", "RED_ttest_padj"))
     fdr_use <- fdr_try[fdr_try %in% colnames(st)]
     fdr_use <- fdr_use[vapply(fdr_use, function(cl) any(!is.na(st[[cl]])), logical(1))][1]
     fdr_txt <- if (is.na(fdr_use)) "NA" else formatC(st[[fdr_use]], format = "g", digits = 2)
@@ -2663,8 +2663,33 @@ DEPolyAPeaks <- function(
 #'   \code{DPAU}/\code{gDPAU} difference \code{NA}. Default 5 (Wang et al. 2022).
 #'   See \strong{Value} for the \code{DPAU}/\code{gDPAU} columns.
 #' @param covariates Optional covariate columns passed to \code{DEPolyAPeaks()}.
-#' @param sample_metadata,covariate_formula Optional covariate handling passed
-#'   to the RED core.
+#' @param sample_metadata Optional \code{data.frame} with one row per replicate
+#'   and a \code{Sample_key} column equal to the replicate token at the end of
+#'   the pseudobulk column names (\code{"<label>_<CellType>_<Sample_key>"}),
+#'   plus the columns named in \code{covariate_formula} and \code{interaction}.
+#'   Required when either of those is given. Replicate tokens must be unique
+#'   within a group (a token shared by treatment and control, e.g. the same
+#'   donor or organoid line, is the paired design).
+#' @param covariate_formula Optional right-hand side of additive covariates
+#'   (columns of \code{sample_metadata}), e.g. \code{"Age + Pmi"} or, for a
+#'   paired design, \code{"donor"}. Included in both the full and the null
+#'   model of \code{RED_LRT} and \code{RED_QL}.
+#' @param interaction Optional name of a \code{sample_metadata} column (e.g.
+#'   \code{"Strain"}). When given, the RED tests (\code{RED_LRT},
+#'   \code{RED_QL}) test the interaction \code{condition:<interaction>} -- does
+#'   the treatment-vs-control usage change differ between the levels of that
+#'   variable? -- with the model
+#'   \code{~ <covariates> + <interaction> + condition + condition:<interaction>}
+#'   (terms aliased with the covariates, e.g. a genotype nested in a donor/line
+#'   covariate, are dropped automatically). Each group must then contain
+#'   replicates of every level, e.g. \code{treatment = "B6_Alcohol+3xTg_Alcohol"},
+#'   \code{control = "B6_Control+3xTg_Control"} (labels joined by \code{"+"}).
+#'   The first factor level is the reference (make the column a factor to
+#'   choose it). The result gains \code{RED_in_<level>} (RED computed within
+#'   each level) and, for a two-level variable, \code{RED_interaction}
+#'   (\code{RED_in_<level2> - RED_in_<level1>}). \code{RED_fisher} and
+#'   \code{RED_ttest} still compare treatment vs control (all levels pooled).
+#'   Default \code{NULL} (test the treatment-vs-control change).
 #' @param gene_meta_last_col Name of the last RNA-metadata column to include in
 #'   the gene-metadata join; columns 1 through this one are kept. Default
 #'   \code{"transcript_info"} (the last column carrying transcript ranges).
@@ -2693,9 +2718,9 @@ DEPolyAPeaks <- function(
 #'   TE sites. Sites outside this set are never flagged (\code{FALSE}).
 #' @param drop_na_cols Logical. Drop columns of \code{red_scores} that are
 #'   entirely \code{NA} -- e.g. with \code{Pasta = FALSE} all PASTA statistic
-#'   columns are \code{NA} by construction, and \code{RED_LRT_cov_*} is
-#'   \code{NA} without a \code{covariate_formula}. Default \code{TRUE}; set
-#'   \code{FALSE} to keep a fixed column layout.
+#'   columns are \code{NA} by construction, and \code{RED_in_*} /
+#'   \code{RED_interaction} are \code{NA} without an \code{interaction}.
+#'   Default \code{TRUE}; set \code{FALSE} to keep a fixed column layout.
 #' @param pair_rule How the proximal/distal pair of each gene is chosen, per
 #'   RED type. \code{"max"} (default): the pair with the largest combined
 #'   change in proportion between treatment and control. \code{"top"}: the
@@ -2704,11 +2729,32 @@ DEPolyAPeaks <- function(
 #'   site and the most-used 3'-most-exon site downstream of it), which does not
 #'   depend on the treatment-vs-control difference.
 #' @param red_tests Tests of the proximal/distal usage change reported per
-#'   pair, any of \code{"LRT"} (binomial GLM likelihood-ratio test on
-#'   per-replicate counts), \code{"fisher"} (Fisher's exact test on pooled
-#'   counts) and \code{"ttest"} (t-test on per-replicate log2(d/p)). Each adds
-#'   \code{RED_<test>_pval} / \code{RED_<test>_padj} (BH per cell type x
-#'   comparison x RED type). Default all three; fewer = faster.
+#'   pair, any of
+#'   \describe{
+#'     \item{\code{"LRT"}}{Binomial GLM likelihood-ratio test on per-replicate
+#'       counts, \code{cbind(distal, proximal) ~ <design>}, full model vs the
+#'       model without the tested term. The design is \code{~ condition}, plus
+#'       \code{covariate_formula} and \code{interaction} when given (one LRT for
+#'       all cases). Treats every read as independent, so it ignores the
+#'       extra variation between biological replicates and is anti-conservative
+#'       when replicates are overdispersed.}
+#'     \item{\code{"QL"}}{Quasi-likelihood test: the same binomial GLM and
+#'       design as \code{"LRT"}, but the extra variation between replicates is
+#'       estimated (Pearson dispersion of each pair, shrunk across all pairs of
+#'       the block towards a trend on read depth with
+#'       \code{limma::squeezeVar()}, i.e. empirical Bayes as in edgeR/limma
+#'       quasi-likelihood; floored at 1) and the change is tested with an
+#'       F-test. Accounts for replicate overdispersion. \code{RED_dispersion}
+#'       reports each pair's dispersion (1 = binomial). Needs at least one
+#'       residual degree of freedom; otherwise \code{NA}.}
+#'     \item{\code{"fisher"}}{Fisher's exact test on counts pooled across
+#'       replicates (treatment vs control).}
+#'     \item{\code{"ttest"}}{t-test on per-replicate log2(d/p) (treatment vs
+#'       control).}
+#'   }
+#'   Each adds \code{RED_<test>_pval} / \code{RED_<test>_padj} (BH per cell
+#'   type x comparison x RED type); \code{RED_test} records the term tested by
+#'   \code{RED_LRT} / \code{RED_QL}. Default all four; fewer = faster.
 #' @param parallel Logical. Compute the (cell type x comparison) blocks in
 #'   parallel (BiocParallel; forking on macOS/Linux). Default \code{FALSE}
 #'   (sequential). Results are identical either way.
@@ -2835,6 +2881,7 @@ DEPsMatrix <- function(
     covariates          = NULL,
     sample_metadata     = NULL,
     covariate_formula   = NULL,
+    interaction         = NULL,
     gene_meta_last_col  = "transcript_info",
     peak_gene_key       = "ensembl_gene_id",
     rna_gene_key        = "ID",
@@ -2845,7 +2892,7 @@ DEPsMatrix <- function(
     repeat_masker_positions = "Intron",
     drop_na_cols        = TRUE,
     pair_rule           = c("max", "top"),
-    red_tests           = c("LRT", "fisher", "ttest"),
+    red_tests           = c("LRT", "QL", "fisher", "ttest"),
     parallel            = FALSE,
     ncores              = NULL,
     BPPARAM             = NULL,
@@ -2872,6 +2919,14 @@ DEPsMatrix <- function(
     stop("`mincounts` must be a single non-negative number.")
   }
   if (!is.list(filterByExpr_args)) stop("`filterByExpr_args` must be a named list.")
+  if ((!is.null(covariate_formula) || !is.null(interaction)) && is.null(sample_metadata)) {
+    stop("`sample_metadata` must be provided when `covariate_formula` or `interaction` is given.")
+  }
+  if (!is.null(interaction) &&
+      (!is.character(interaction) || length(interaction) != 1 ||
+       !interaction %in% colnames(sample_metadata))) {
+    stop("`interaction` must be the name of one column of `sample_metadata`.")
+  }
   if (!methods::is(seu, "Seurat")) stop("`seu` must be a Seurat object.")
   if (repeat_masker != "none" && is.null(rmsk)) {
     stop("`rmsk` (a RepeatMasker table with genoName/genoStart/genoEnd/strand ",
@@ -3330,7 +3385,7 @@ DEPsMatrix <- function(
   # per-comparison filter.
   keep_ct <- list()
   if (filter_scope == "celltype") {
-    labels  <- unique(c(comparisons$treatment, comparisons$control))
+    labels  <- unique(.SplitLabels(c(comparisons$treatment, comparisons$control)))
     pb_cols <- setdiff(colnames(pseudo), "peak")
     for (ct in celltypes_red) {
       cols  <- lapply(labels, function(l) .PseudobulkCols(pb_cols, l, ct))
@@ -3387,6 +3442,7 @@ DEPsMatrix <- function(
         filterByExpr_args = filterByExpr_args,
         sample_metadata   = sample_metadata,
         covariate_formula = covariate_formula,
+        interaction       = interaction,
         gdpau_min_reads   = gdpau_min_reads,
         pair_rule         = pair_rule,
         min_site_reads    = min_site_reads,
@@ -3491,7 +3547,7 @@ DEPsMatrix <- function(
 
   # Drop columns that are entirely NA -- e.g. with Pasta = FALSE every PASTA
   # statistic column (Estimate/p.value/percent.*/...) is NA by construction, and
-  # RED_LRT_cov_* is NA unless a covariate_formula was supplied. Keeps the table
+  # RED_in_* / RED_interaction are NA unless an interaction was supplied. Keeps the table
   # readable; set drop_na_cols = FALSE to retain a fixed column layout.
   if (isTRUE(drop_na_cols) && nrow(out) > 0) {
     all_na <- vapply(out, function(col) all(is.na(col)), logical(1))
@@ -3585,7 +3641,15 @@ DEPsMatrix <- function(
 }
 .PseudobulkPattern <- function(label, ct) {
   esc <- function(x) gsub("([][{}()+*^$|\\\\?.])", "\\\\\\1", x)
-  paste0("(^|\\.)g?", esc(paste0(label, "_", ct)), "_[^_]+$")
+  # A group may pool several labels joined by "+" (e.g. "B6_Alcohol+3xTg_Alcohol"),
+  # needed to test an interaction (both levels of the interacting variable in
+  # each group).
+  labs <- .SplitLabels(label)
+  paste0("(^|\\.)g?(", paste(esc(paste0(labs, "_", ct)), collapse = "|"), ")_[^_]+$")
+}
+.SplitLabels <- function(label) {
+  labs <- trimws(unlist(strsplit(as.character(label), "+", fixed = TRUE)))
+  labs[nzchar(labs)]
 }
 
 #' Assemble DEPsMatrix(return_filter = TRUE)$filter (internal)
@@ -3865,6 +3929,7 @@ PeakAudit <- function(seu,
     filterByExpr_args = list(),
     sample_metadata   = NULL,
     covariate_formula = NULL,
+    interaction       = NULL,
     gdpau_min_reads   = 5,
     pair_rule         = c("max", "top"),
     min_site_reads    = 10,
@@ -3872,7 +3937,7 @@ PeakAudit <- function(seu,
     min_rep_pairs     = 0.9,
     keep_counts       = FALSE,
     keep_peaks        = NULL,
-    red_tests         = c("LRT", "fisher", "ttest"),
+    red_tests         = c("LRT", "QL", "fisher", "ttest"),
     verbose           = FALSE
 ) {
   red_tests <- match.arg(red_tests, several.ok = TRUE)
@@ -3906,8 +3971,8 @@ PeakAudit <- function(seu,
     stop("`CellType` '", CellType, "' not found in Peaks$CellType.")
   }
 
-  if (!is.null(covariate_formula) && is.null(sample_metadata)) {
-    stop("`sample_metadata` must be provided when `covariate_formula` is specified.")
+  if ((!is.null(covariate_formula) || !is.null(interaction)) && is.null(sample_metadata)) {
+    stop("`sample_metadata` must be provided when `covariate_formula` or `interaction` is specified.")
   }
   if (!is.null(sample_metadata) && !all(c("Sample_key") %in% colnames(sample_metadata))) {
     stop("`sample_metadata` must contain a `Sample_key` column matching sanitized sample IDs.")
@@ -3953,29 +4018,27 @@ PeakAudit <- function(seu,
         .data$CellType  == .env$CellType )
   }
 
-  if (!is.null(covariate_formula)) {
-    trt_orig_cols  <- grep(trt_pat,  colnames(counts_obj), value = TRUE)
-    ctrl_orig_cols <- grep(ctrl_pat, colnames(counts_obj), value = TRUE)
-
-    # Strip assay prefix (e.g. "polyA.") before extracting the sample token
-    trt_orig_cols_clean  <- sub("^polyA\\.", "", trt_orig_cols)
-    ctrl_orig_cols_clean <- sub("^polyA\\.", "", ctrl_orig_cols)
-
-    trt_sample_ids  <- sub(paste0("^", treatment, "_", CellType, "_"), "", trt_orig_cols_clean)
-    ctrl_sample_ids <- sub(paste0("^", control,   "_", CellType, "_"), "", ctrl_orig_cols_clean)
-
-    trt_covariates  <- sample_metadata[match(trt_sample_ids,  sample_metadata$Sample_key), all.vars(stats::as.formula(paste("~", covariate_formula)))]
-    ctrl_covariates <- sample_metadata[match(ctrl_sample_ids, sample_metadata$Sample_key), all.vars(stats::as.formula(paste("~", covariate_formula)))]
-
-    # sanity check — should be no NAs after matching sample_metadata
-    stopifnot(!anyNA(trt_covariates), !anyNA(ctrl_covariates))
-  }
-
   # Original pseudobulk column names, in the same order rename_with() numbers
   # them below (polyA_treatment_1.., polyA_control_1..) -- used to return the
-  # block's counts with real sample names (DEPsMatrix(return_filter = TRUE)).
+  # block's counts with real sample names (DEPsMatrix(return_filter = TRUE))
+  # and to build the per-replicate design of the RED tests.
   trt_cols_orig  <- grep(trt_pat,  colnames(counts_obj), value = TRUE)
   ctrl_cols_orig <- grep(ctrl_pat, colnames(counts_obj), value = TRUE)
+
+  # Design of RED_LRT / RED_QL, rows = treatment replicates then control
+  # replicates (the polyA_treatment_* / polyA_control_* order). The replicate
+  # token is the last "_" field of the pseudobulk column name.
+  red_design <- .RedDesign(
+    trt_ids           = sub("^.*_", "", trt_cols_orig),
+    ctrl_ids          = sub("^.*_", "", ctrl_cols_orig),
+    sample_metadata   = sample_metadata,
+    covariate_formula = covariate_formula,
+    interaction       = interaction
+  )
+  if (verbose && length(red_design$dropped)) {
+    message("RED tests: dropped design column(s) aliased with the covariates: ",
+            paste(red_design$dropped, collapse = ", "))
+  }
 
   counts_polyA <- counts_obj %>%
     dplyr::rename_with(
@@ -4128,7 +4191,6 @@ PeakAudit <- function(seu,
         RED_fisher_padj   = NA_real_,
         RED_ttest_pval    = NA_real_,
         RED_LRT_pval      = NA_real_,
-        RED_LRT_cov_pval  = NA_real_,
         PASTA_pval        = NA_real_,
         PASTA_padj        = NA_real_,
         p_site_id         = NA_integer_,
@@ -4388,6 +4450,35 @@ PeakAudit <- function(seu,
       dplyr::mutate( RED = log2(d_treatment_prop/p_treatment_prop) - log2(d_control_prop/p_control_prop),
                      RED = ifelse(is.finite(RED), RED, NA_real_))
 
+    # RED within each level of the interaction variable (same definition as RED:
+    # mean of the per-replicate proportions of the level's replicates), and
+    # their difference for a two-level variable (the effect RED_LRT / RED_QL
+    # test when `interaction` is given).
+    if (!is.null(red_design$levels)) {
+      lv_trt  <- red_design$level_of[seq_len(n_trt)]
+      lv_ctrl <- red_design$level_of[n_trt + seq_len(n_ctrl)]
+      prop_mean <- function(site_ids, cols) {
+        if (length(cols) == 0) return(rep(NA_real_, length(site_ids)))
+        m <- as.matrix(gene_processed[match(site_ids, gene_processed$site_id), cols, drop = FALSE])
+        rowMeans(m, na.rm = TRUE)
+      }
+      red_lv <- vapply(red_design$levels, function(lv) {
+        tc <- paste0("prop_polyA_treatment_", which(lv_trt == lv))
+        cc <- paste0("prop_polyA_control_",   which(lv_ctrl == lv))
+        if (!length(tc) || !length(cc)) return(rep(NA_real_, nrow(pairwise_comparisons)))
+        r <- log2(prop_mean(pairwise_comparisons$d_site_id, tc) / prop_mean(pairwise_comparisons$p_site_id, tc)) -
+             log2(prop_mean(pairwise_comparisons$d_site_id, cc) / prop_mean(pairwise_comparisons$p_site_id, cc))
+        ifelse(is.finite(r), r, NA_real_)
+      }, numeric(nrow(pairwise_comparisons)))
+      red_lv <- matrix(red_lv, nrow = nrow(pairwise_comparisons))
+      for (k in seq_along(red_design$levels)) {
+        pairwise_comparisons[[paste0("RED_in_", red_design$level_names[k])]] <- red_lv[, k]
+      }
+      pairwise_comparisons$RED_interaction <- if (length(red_design$levels) == 2) {
+        red_lv[, 2] - red_lv[, 1]
+      } else NA_real_
+    }
+
     # Only the requested tests; Fisher and t-test come from ONE
     # compute_statistics() call per pair (it computes both).
     n_pairs <- nrow(pairwise_comparisons)
@@ -4401,20 +4492,22 @@ PeakAudit <- function(seu,
         RED_fisher_pval = if ("fisher" %in% red_tests)
           vapply(st, function(x) x$fisher_pval, numeric(1)) else NA_real_,
         RED_ttest_pval  = if ("ttest" %in% red_tests)
-          vapply(st, function(x) x$ttest_pval, numeric(1)) else NA_real_,
-        RED_LRT_pval = if ("LRT" %in% red_tests) {
-          vapply(seq_len(n_pairs), function(i) {
-            compute_statistics_LRT(p_site_id[i], d_site_id[i], gene_processed)$lrt_pval
-          }, numeric(1))
-        } else NA_real_,
-        RED_LRT_cov_pval = if (!is.null(covariate_formula)) {
-          sapply(seq_len(nrow(pairwise_comparisons)), function(i) {
-            compute_statistics_LRT_cov(
-              p_site_id[i], d_site_id[i], gene_processed,
-              trt_covariates, ctrl_covariates,
-              covariate_formula = covariate_formula
-            )$lrt_pval })
-        } else { NA_real_ },
+          vapply(st, function(x) x$ttest_pval, numeric(1)) else NA_real_
+      )
+    # One binomial GLM per pair: RED_LRT, plus the deviance and the dispersion
+    # (variation between replicates) that RED_QL uses after the loop.
+    lrt <- lapply(seq_len(n_pairs), function(i)
+      compute_statistics_LRT(pairwise_comparisons$p_site_id[i], pairwise_comparisons$d_site_id[i],
+                             gene_processed, design = red_design$X, test = red_design$test))
+    pairwise_comparisons <- pairwise_comparisons %>%
+      dplyr::mutate(
+        RED_LRT_pval   = if ("LRT" %in% red_tests)
+          vapply(lrt, function(x) x$lrt_pval, numeric(1)) else NA_real_,
+        RED_dispersion = vapply(lrt, function(x) x$dispersion, numeric(1)),
+        lrt_dev    = vapply(lrt, function(x) x$deviance, numeric(1)),
+        lrt_df     = vapply(lrt, function(x) x$df, numeric(1)),
+        lrt_df_res = vapply(lrt, function(x) x$df_residual, numeric(1)),
+        lrt_reads  = vapply(lrt, function(x) x$reads, numeric(1))
       )
 
     pairwise_comparisons <- pairwise_comparisons %>%
@@ -4493,17 +4586,29 @@ PeakAudit <- function(seu,
     return(.with_filter(tibble::tibble()))
   }
 
+  Matrix <- dplyr::bind_rows(Matrix)
+
+  # RED_QL: the LRT deviance of each pair tested against the dispersion between
+  # replicates, shrunk across all pairs of the RED type (needs every pair of the
+  # block, so it runs here).
+  for (cl in c("RED_dispersion", "lrt_dev", "lrt_df", "lrt_df_res", "lrt_reads")) {
+    if (!cl %in% colnames(Matrix)) Matrix[[cl]] <- NA_real_     # only single-site genes
+  }
   Matrix <- Matrix %>%
-    dplyr::bind_rows() %>%
     dplyr::group_by(RED_type) %>%
-    dplyr::bind_rows() %>%
+    dplyr::mutate(RED_QL_pval = if ("QL" %in% red_tests)
+      .QLPvalues(lrt_dev, lrt_df, lrt_df_res, RED_dispersion, lrt_reads) else NA_real_) %>%
+    dplyr::ungroup()
+  Matrix$RED_test <- red_design$term
+
+  Matrix <- Matrix %>%
     # BH correction across all genes, separately per test and RED type
     dplyr::group_by(RED_type) %>%
     dplyr::mutate(
       RED_fisher_padj    = p.adjust(RED_fisher_pval,     method = "BH"),
       RED_ttest_padj     = p.adjust(RED_ttest_pval,      method = "BH"),
       RED_LRT_padj       = p.adjust(RED_LRT_pval,         method = "BH"),
-      RED_LRT_cov_padj   = p.adjust(RED_LRT_cov_pval,     method = "BH"),  # <-- add
+      RED_QL_padj        = p.adjust(RED_QL_pval,          method = "BH"),
       PASTA_padj         = p.adjust(PASTA_pval,           method = "BH"),
       # Bug fix: `Condition` was accepted as an argument and used to FILTER
       # the input `Peaks`, but was never carried into the output -- so
@@ -4521,11 +4626,13 @@ PeakAudit <- function(seu,
       Gene_symbol, Ensembl_ID, chr, strand, npas,
       RED_type, RLD, RLD_direction,
       RED, RED_Direction,
+      dplyr::starts_with("RED_in_"), dplyr::any_of("RED_interaction"),
       DPAU, gDPAU,
+      RED_test,
       RED_LRT_pval,     RED_LRT_padj,
+      RED_QL_pval,      RED_QL_padj,     RED_dispersion,
       RED_fisher_pval,  RED_fisher_padj,
       RED_ttest_pval,   RED_ttest_padj,
-      RED_LRT_cov_pval, RED_LRT_cov_padj,
       PASTA_pval,       PASTA_padj,
       Condition,
       dplyr::any_of(c("quantifiable", "ok_reads", "ok_usage", "ok_replicates",
@@ -4631,149 +4738,187 @@ compute_statistics <- function(p_idx, d_idx, gene_processed) {
   ))
 }
 
-#' Compute a covariate-adjusted LRT p-value for a proximal–distal polyA site pair
-#'
-#' Same as compute_statistics_LRT(), but allows arbitrary per-replicate
-#' covariates to be included in both the full and null models, so that the
-#' likelihood ratio test isolates the condition effect while adjusting for
-#' covariates (e.g., Age, Pmi, batch).
-#'
-#' @param p_idx,d_idx,gene_processed As in compute_statistics_LRT()
-#' @param trt_covariates data.frame, one row per treatment replicate, in the
-#'   same order as the treatment columns in gene_processed
-#' @param ctrl_covariates data.frame, one row per control replicate, in the
-#'   same order as the control columns in gene_processed
-#' @param covariate_formula Character. RHS terms to add, e.g. "Age + Pmi"
-#'
-#' @keywords internal
-compute_statistics_LRT_cov <- function(p_idx, d_idx, gene_processed,
-                                       trt_covariates, ctrl_covariates,
-                                       covariate_formula) {
-  trt_cols  <- grep("^polyA_treatment_", colnames(gene_processed), value = TRUE)
-  ctrl_cols <- grep("^polyA_control_",   colnames(gene_processed), value = TRUE)
-
-  p_counts_trt  <- unlist(gene_processed[p_idx, trt_cols])
-  d_counts_trt  <- unlist(gene_processed[d_idx, trt_cols])
-  p_counts_ctrl <- unlist(gene_processed[p_idx, ctrl_cols])
-  d_counts_ctrl <- unlist(gene_processed[d_idx, ctrl_cols])
-
-  lrt_pval <- tryCatch({
-
-    df <- data.frame(
-      d_count   = c(d_counts_trt, d_counts_ctrl),
-      p_count   = c(p_counts_trt, p_counts_ctrl),
-      condition = c(rep("treatment", length(d_counts_trt)),
-                    rep("control",   length(d_counts_ctrl))),
-      rbind(trt_covariates, ctrl_covariates)
-    )
-    df$condition <- factor(df$condition, levels = c("control", "treatment"))
-    df <- df[stats::complete.cases(df) & (df$d_count + df$p_count) > 0, ]
-
-    if (nrow(df) < 3 || length(unique(df$condition)) < 2) {
-      NA_real_
-    } else {
-      full_f <- stats::as.formula(paste("cbind(d_count, p_count) ~ condition +", covariate_formula))
-      null_f <- stats::as.formula(paste("cbind(d_count, p_count) ~",            covariate_formula))
-
-      # glm warnings (e.g. "fitted probabilities numerically 0 or 1", typical
-      # of very strong usage changes) are muffled instead of turning the
-      # p-value into NA -- that silently dropped some of the strongest events.
-      fit_full <- suppressWarnings(stats::glm(full_f, data = df, family = stats::binomial()))
-      fit_null <- suppressWarnings(stats::glm(null_f, data = df, family = stats::binomial()))
-
-      if (!fit_full$converged || !fit_null$converged) {
-        NA_real_
-      } else {
-        lrt <- suppressWarnings(stats::anova(fit_null, fit_full, test = "LRT"))
-        lrt[["Pr(>Chi)"]][2]
-      }
-    }
-  },
-  error   = function(e) NA_real_
-  )
-
-  return(list(lrt_pval = lrt_pval))
-}
-
-#' Compute a likelihood ratio test p-value for a proximal–distal polyA site pair
+#' Likelihood ratio test for a proximal–distal polyA site pair
 #'
 #' For a given proximal (p) and distal (d) polyA site pair within a single gene,
-#' fits a binomial GLM of site usage (\code{cbind(d_counts, p_counts) ~ condition})
-#' using per-replicate counts, and compares it against an intercept-only null model
-#' via a likelihood ratio test. Unlike \code{compute_statistics()}'s Fisher's exact
-#' test (which pools replicates into a single 2x2 table) or its t-test (which
-#' operates on derived log2 ratios), this test uses the raw per-replicate counts
-#' directly in a likelihood framework.
+#' fits a binomial GLM of site usage, \code{cbind(d_counts, p_counts) ~ design},
+#' on the per-replicate counts, and compares it with the same model without the
+#' tested term via a likelihood ratio test. Without \code{design} the model is
+#' \code{~ condition}; a design from \code{.RedDesign()} adds covariates
+#' (\code{covariate_formula}) and/or an interaction, so one LRT covers all
+#' cases. The same fit gives the Pearson dispersion (variation between
+#' replicates relative to the binomial; 1 = binomial) used by \code{RED_QL}.
 #'
-#' @param p_idx Integer. Row index of the proximal polyA site in
+#' @param p_idx Integer. Site id of the proximal polyA site in
 #'   \code{gene_processed}
-#' @param d_idx Integer. Row index of the distal polyA site in
+#' @param d_idx Integer. Site id of the distal polyA site in
 #'   \code{gene_processed}
 #' @param gene_processed \code{data.frame} containing polyA site data for a
 #'   single gene. Must contain columns matching \code{^polyA_treatment_} and
 #'   \code{^polyA_control_} for per-replicate counts
+#' @param design Optional model matrix, one row per replicate (treatment
+#'   replicates, then control replicates). \code{NULL} (default) = intercept +
+#'   condition.
+#' @param test Column index(es) of \code{design} tested (dropped from the null
+#'   model). Default: the condition column when \code{design} is \code{NULL}.
 #'
-#' @return A named \code{list} with one element:
-#'   \describe{
-#'     \item{\code{lrt_pval}}{P-value from the likelihood ratio test comparing
-#'       a binomial GLM with condition as a predictor against the null model.
-#'       Returns \code{NA_real_} if there are fewer than 2 usable replicates
-#'       total, if all counts are zero, or if model fitting errors. Fitting
-#'       warnings (e.g. fitted probabilities 0/1 for very strong changes) are
-#'       muffled and the p-value is kept}
-#'   }
+#' @return A named \code{list}: \code{lrt_pval} (chi-square test of the
+#'   deviance difference), \code{deviance} (that difference), \code{df} (tested
+#'   coefficients), \code{df_residual}, \code{dispersion} (Pearson chi-square /
+#'   residual df of the full model) and \code{reads} (total reads of the pair).
+#'   Replicates with no reads at either site are dropped; \code{NA} values if
+#'   fewer than 2 replicates remain or the fit fails. Fitting warnings (e.g.
+#'   fitted probabilities 0/1 for very strong changes) are muffled.
 #'
 #' @keywords internal
 #'
-compute_statistics_LRT <- function(p_idx, d_idx, gene_processed) {
+compute_statistics_LRT <- function(p_idx, d_idx, gene_processed,
+                                   design = NULL, test = NULL) {
   trt_cols  <- grep("^polyA_treatment_", colnames(gene_processed), value = TRUE)
   ctrl_cols <- grep("^polyA_control_",   colnames(gene_processed), value = TRUE)
+  p_counts <- unlist(gene_processed[gene_processed$site_id == p_idx, c(trt_cols, ctrl_cols)])
+  d_counts <- unlist(gene_processed[gene_processed$site_id == d_idx, c(trt_cols, ctrl_cols)])
+  if (is.null(design)) {
+    design <- cbind(1, c(rep(1, length(trt_cols)), rep(0, length(ctrl_cols))))
+    test   <- 2L
+  }
+  out <- list(lrt_pval = NA_real_, deviance = NA_real_, df = NA_real_,
+              df_residual = NA_real_, dispersion = NA_real_, reads = NA_real_)
 
-  p_counts_trt  <- unlist(gene_processed[p_idx, trt_cols])
-  d_counts_trt  <- unlist(gene_processed[d_idx, trt_cols])
-  p_counts_ctrl <- unlist(gene_processed[p_idx, ctrl_cols])
-  d_counts_ctrl <- unlist(gene_processed[d_idx, ctrl_cols])
-
-  lrt_pval <- tryCatch({
-
-    df <- data.frame(
-      d_count   = c(d_counts_trt, d_counts_ctrl),
-      p_count   = c(p_counts_trt, p_counts_ctrl),
-      condition = c(rep("treatment", length(d_counts_trt)),
-                    rep("control",   length(d_counts_ctrl)))
-    )
-    df$condition <- factor(df$condition, levels = c("control", "treatment"))
-
+  tryCatch({
     # Drop replicates with no reads at either site (uninformative)
-    df <- df[stats::complete.cases(df) & (df$d_count + df$p_count) > 0, ]
+    ok <- !is.na(p_counts) & !is.na(d_counts) & (p_counts + d_counts) > 0
+    if (sum(ok) < 2) return(out)
+    n <- (d_counts + p_counts)[ok]
+    y <- d_counts[ok] / n
+    X <- design[ok, , drop = FALSE]
+    # glm warnings (e.g. "fitted probabilities numerically 0 or 1", typical of
+    # very strong usage changes) are muffled instead of turning the p-value into
+    # NA -- that silently dropped some of the strongest events.
+    fit1 <- suppressWarnings(stats::glm.fit(X, y, weights = n, family = stats::binomial()))
+    fit0 <- suppressWarnings(stats::glm.fit(X[, -test, drop = FALSE], y, weights = n,
+                                            family = stats::binomial()))
+    df <- fit1$rank - fit0$rank          # tested coefficients still estimable
+    if (df < 1) return(out)
+    dev <- max(fit0$deviance - fit1$deviance, 0)
+    mu  <- pmin(pmax(fit1$fitted.values, 1e-8), 1 - 1e-8)
+    out$lrt_pval    <- stats::pchisq(dev, df = df, lower.tail = FALSE)
+    out$deviance    <- dev
+    out$df          <- df
+    out$df_residual <- fit1$df.residual
+    out$dispersion  <- if (fit1$df.residual >= 1)
+      sum(n * (y - mu)^2 / (mu * (1 - mu))) / fit1$df.residual else NA_real_
+    out$reads       <- sum(n)
+    out
+  }, error = function(e) out)
+}
 
-    if (nrow(df) < 2 || length(unique(df$condition)) < 2) {
-      NA_real_
-    } else {
-      # glm warnings (e.g. "fitted probabilities numerically 0 or 1", typical
-      # of very strong usage changes) are muffled instead of turning the
-      # p-value into NA -- that silently dropped some of the strongest events.
-      fit_full <- suppressWarnings(stats::glm(
-        cbind(d_count, p_count) ~ condition,
-        data   = df,
-        family = stats::binomial()
-      ))
-      fit_null <- suppressWarnings(stats::glm(
-        cbind(d_count, p_count) ~ 1,
-        data   = df,
-        family = stats::binomial()
-      ))
-
-      lrt <- suppressWarnings(stats::anova(fit_null, fit_full, test = "LRT"))
-      lrt[["Pr(>Chi)"]][2]
+#' Per-replicate design of the RED tests (internal)
+#'
+#' One row per replicate (treatment replicates, then control replicates) with
+#' \code{condition} (control = reference) and the \code{sample_metadata}
+#' columns named in \code{covariate_formula} / \code{interaction}. Model:
+#' \code{~ <covariates> + condition}, or with an interaction
+#' \code{~ <covariates> + <interaction> + condition + condition:<interaction>}.
+#' Columns aliased with earlier ones (e.g. a genotype nested in a donor/line
+#' covariate) are dropped; the tested term must stay estimable.
+#'
+#' @return list: \code{X} (full-rank model matrix), \code{test} (column
+#'   index(es) of the tested term in \code{X}), \code{term} (its label),
+#'   \code{dropped} (aliased columns removed), \code{levels} /
+#'   \code{level_names} / \code{level_of} (interaction variable; \code{NULL}
+#'   without one).
+#' @noRd
+.RedDesign <- function(trt_ids, ctrl_ids, sample_metadata = NULL,
+                       covariate_formula = NULL, interaction = NULL) {
+  sd <- data.frame(condition = factor(c(rep("treatment", length(trt_ids)),
+                                        rep("control",   length(ctrl_ids))),
+                                      levels = c("control", "treatment")))
+  vars <- character(0)
+  if (!is.null(covariate_formula)) {
+    vars <- all.vars(stats::as.formula(paste("~", covariate_formula)))
+  }
+  if (!is.null(interaction)) vars <- union(vars, interaction)
+  if (length(vars)) {
+    if (is.null(sample_metadata) || !"Sample_key" %in% colnames(sample_metadata)) {
+      stop("`sample_metadata` with a `Sample_key` column is required for the covariates / interaction.")
     }
-  },
-  error   = function(e) NA_real_
-  )
+    miss <- setdiff(vars, colnames(sample_metadata))
+    if (length(miss)) stop("Not in `sample_metadata`: ", paste(miss, collapse = ", "))
+    ids <- c(trt_ids, ctrl_ids)
+    idx <- match(ids, as.character(sample_metadata$Sample_key))
+    if (anyNA(idx)) {
+      stop("`sample_metadata$Sample_key` has no row for replicate(s): ",
+           paste(unique(ids[is.na(idx)]), collapse = ", "))
+    }
+    for (v in vars) {
+      x <- sample_metadata[[v]][idx]
+      if (anyNA(x)) stop("`sample_metadata$", v, "` is NA for some replicates of this comparison.")
+      if (is.character(x) || is.logical(x)) x <- factor(x)
+      if (is.factor(x)) x <- droplevels(x)
+      sd[[v]] <- x
+    }
+  }
+  if (!is.null(interaction)) {
+    if (!is.factor(sd[[interaction]])) sd[[interaction]] <- factor(sd[[interaction]])
+    if (nlevels(sd[[interaction]]) < 2) {
+      stop("`interaction` variable '", interaction, "' has a single level in this comparison.")
+    }
+  }
+  term <- if (is.null(interaction)) "condition" else paste0("condition:", interaction)
+  rhs  <- c(covariate_formula, interaction, "condition", if (!is.null(interaction)) term)
+  f    <- stats::as.formula(paste("~", paste(rhs, collapse = " + ")))
+  X    <- stats::model.matrix(f, data = sd)
+  labs <- attr(stats::terms(f), "term.labels")
+  asg  <- attr(X, "assign")
+  # R orders the factors of an interaction label by their first appearance in
+  # the formula ("genotype:condition"), so match the term by its variables.
+  term_vars <- strsplit(term, ":", fixed = TRUE)[[1]]
+  is_term   <- vapply(strsplit(labs, ":", fixed = TRUE),
+                      function(v) setequal(v, term_vars), logical(1))
+  test_names <- colnames(X)[asg > 0 & is_term[pmax(asg, 1)]]
+  if (!length(test_names)) stop("Could not find the tested term '", term, "' in the design.")
+  # Drop columns aliased with earlier ones (pivoted QR keeps the first
+  # independent columns in formula order, so covariates win over later terms).
+  q    <- qr(X)
+  keep <- sort(q$pivot[seq_len(q$rank)])
+  dropped <- colnames(X)[-keep]
+  X <- X[, keep, drop = FALSE]
+  if (!all(test_names %in% colnames(X))) {
+    stop("The tested term '", term, "' is not estimable with this design (aliased with: ",
+         covariate_formula, ").")
+  }
+  rownames(X) <- c(trt_ids, ctrl_ids)
+  out <- list(X = X, test = match(test_names, colnames(X)), term = term,
+              dropped = dropped, levels = NULL, level_names = NULL, level_of = NULL)
+  if (!is.null(interaction)) {
+    out$levels      <- levels(sd[[interaction]])
+    out$level_names <- make.names(out$levels)
+    out$level_of    <- as.character(sd[[interaction]])
+  }
+  out
+}
 
-  return(list(
-    lrt_pval = lrt_pval
-  ))
+#' RED_QL p-values (internal)
+#'
+#' Quasi-likelihood F-test from the per-pair binomial LRT: the deviance
+#' difference is divided by the pair's dispersion (variation between
+#' replicates). With few replicates each dispersion is noisy, so the
+#' dispersions of all pairs of the RED type are shrunk towards a trend on read
+#' depth (\code{limma::squeezeVar()}, empirical Bayes as in edgeR/limma
+#' quasi-likelihood) and floored at 1 (= binomial).
+#' @noRd
+.QLPvalues <- function(dev, df, df_res, dispersion, reads, min_pairs = 20) {
+  ok  <- is.finite(dev) & is.finite(dispersion) & df_res >= 1 & dispersion > 0 & df >= 1
+  phi <- dispersion; df2 <- df_res
+  if (sum(ok) >= min_pairs) {
+    sq <- limma::squeezeVar(dispersion[ok], df_res[ok], covariate = log2(reads[ok] + 1))
+    phi[ok] <- sq$var.post
+    df2[ok] <- df_res[ok] + pmin(sq$df.prior, 1e6)
+  }
+  p <- stats::pf((dev / df) / pmax(phi, 1), df, df2, lower.tail = FALSE)
+  p[!ok] <- NA_real_
+  p
 }
 
 #' Export cell barcodes by condition and cell type
