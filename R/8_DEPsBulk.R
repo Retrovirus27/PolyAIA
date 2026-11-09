@@ -54,6 +54,10 @@
 #'   genome build as the counts.
 #' @param max.dist Maximum distance (nt) between a site and its polyA_DB site.
 #'   Default 50.
+#' @param genome_build \code{"hg38"}, \code{"hg19"} or \code{"mm10"}: gene
+#'   start/end from the EnsDb of that build (hg38 = v86, hg19 = v75, mm10 =
+#'   v79), needed for \code{RLDi} (intronic RLD). \code{NULL} (default): no
+#'   gene coordinates, \code{RLDi} is \code{NA}; everything else is computed.
 #' @param genomic_positions \code{Intron.exon.location} values kept. Default
 #'   \code{c("3' most exon", "Intron")}.
 #' @param exclude_misprime,exclude_internal_priming Drop sites flagged in the
@@ -112,6 +116,7 @@
 #'   comparisons       = comparisons,
 #'   condition_col     = "group",
 #'   polyAdb.file      = "polyAdb_hg38.txt",
+#'   genome_build      = "hg38",
 #'   covariate_formula = "line"          # paired: each line mock vs infected
 #' )
 #'
@@ -133,6 +138,7 @@ DEPsMatrixBulk <- function(
     polyAdb.file      = NULL,
     polyAdb           = NULL,
     max.dist          = 50,
+    genome_build      = NULL,
     genomic_positions = c("3' most exon", "Intron"),
     exclude_misprime  = FALSE,
     exclude_internal_priming = FALSE,
@@ -298,6 +304,36 @@ DEPsMatrixBulk <- function(
     sym_src <- intersect(c("Gene_Symbol", "SYMBOL", "Symbol", "gene_name"), colnames(Peaks_all))
     if (length(sym_src)) Peaks_all$symbol <- Peaks_all[[sym_src[1]]]
   }
+  # Gene start/end (used by the RED core for RLDi). In DEPsMatrix they come
+  # from the RNA assay's gene annotation; here from the EnsDb of genome_build.
+  Peaks_all$gene_start <- NA_real_
+  Peaks_all$gene_end   <- NA_real_
+  if (!is.null(genome_build)) {
+    ensdb <- switch(genome_build,
+      hg38 = EnsDb.Hsapiens.v86::EnsDb.Hsapiens.v86,
+      hg19 = EnsDb.Hsapiens.v75::EnsDb.Hsapiens.v75,
+      mm10 = EnsDb.Mmusculus.v79::EnsDb.Mmusculus.v79,
+      stop("`genome_build` must be \"hg38\", \"hg19\" or \"mm10\"."))
+    gid <- sub("\\..*$", "", as.character(Peaks_all$ensembl_gene_id))
+    gc  <- tryCatch(
+      suppressMessages(AnnotationDbi::select(ensdb, keys = unique(gid), keytype = "GENEID",
+                                             columns = c("GENEID", "GENESEQSTART", "GENESEQEND"))),
+      error = function(e) NULL)
+    if (!is.null(gc) && nrow(gc)) {
+      gc <- gc[!duplicated(gc$GENEID), , drop = FALSE]
+      mi <- match(gid, gc$GENEID)
+      Peaks_all$gene_start <- as.numeric(gc$GENESEQSTART[mi])
+      Peaks_all$gene_end   <- as.numeric(gc$GENESEQEND[mi])
+    }
+    if (verbose) {
+      message("Gene coordinates (", genome_build, ") for ",
+              length(unique(gid[!is.na(Peaks_all$gene_start)])), " of ", length(unique(gid)),
+              " genes (RLDi is NA for the rest).")
+    }
+  } else if (verbose) {
+    message("genome_build = NULL: no gene coordinates, RLDi will be NA.")
+  }
+
   # PASTA statistic columns the RED core expects (no PASTA in bulk)
   for (cl in c("Estimate", "p.value", "p_val_adj", "percent.1", "percent.2")) Peaks_all[[cl]] <- NA_real_
   Peaks_all$CellType <- ct
