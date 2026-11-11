@@ -2,39 +2,51 @@
 % Please edit documentation in R/3_PolyAAnalysis.R
 \name{compute_statistics_LRT}
 \alias{compute_statistics_LRT}
-\title{Compute a likelihood ratio test p-value for a proximal–distal polyA site pair}
+\title{Likelihood ratio test for a proximal–distal polyA site pair}
 \usage{
-compute_statistics_LRT(p_idx, d_idx, gene_processed)
+compute_statistics_LRT(
+  p_idx,
+  d_idx,
+  gene_processed,
+  design = NULL,
+  test = NULL
+)
 }
 \arguments{
-\item{p_idx}{Integer. Row index of the proximal polyA site in
+\item{p_idx}{Integer. Site id of the proximal polyA site in
 \code{gene_processed}}
 
-\item{d_idx}{Integer. Row index of the distal polyA site in
+\item{d_idx}{Integer. Site id of the distal polyA site in
 \code{gene_processed}}
 
 \item{gene_processed}{\code{data.frame} containing polyA site data for a
 single gene. Must contain columns matching \code{^polyA_treatment_} and
 \code{^polyA_control_} for per-replicate counts}
+
+\item{design}{Optional model matrix, one row per replicate (treatment
+replicates, then control replicates). \code{NULL} (default) = intercept +
+condition.}
+
+\item{test}{Column index(es) of \code{design} tested (dropped from the null
+model). Default: the condition column when \code{design} is \code{NULL}.}
 }
 \value{
-A named \code{list} with one element:
-  \describe{
-    \item{\code{lrt_pval}}{P-value from the likelihood ratio test comparing
-      a binomial GLM with condition as a predictor against the null model.
-      Returns \code{NA_real_} if there are fewer than 2 usable replicates
-      total, if all counts are zero, or if model fitting errors. Fitting
-      warnings (e.g. fitted probabilities 0/1 for very strong changes) are
-      muffled and the p-value is kept}
-  }
+A named \code{list}: \code{lrt_pval} (chi-square test of the
+  deviance difference), \code{deviance} (that difference), \code{df} (tested
+  coefficients), \code{df_residual}, \code{dispersion} (Pearson chi-square /
+  residual df of the full model) and \code{reads} (total reads of the pair).
+  Replicates with no reads at either site are dropped; \code{NA} values if
+  fewer than 2 replicates remain or the fit fails. Fitting warnings (e.g.
+  fitted probabilities 0/1 for very strong changes) are muffled.
 }
 \description{
 For a given proximal (p) and distal (d) polyA site pair within a single gene,
-fits a binomial GLM of site usage (\code{cbind(d_counts, p_counts) ~ condition})
-using per-replicate counts, and compares it against an intercept-only null model
-via a likelihood ratio test. Unlike \code{compute_statistics()}'s Fisher's exact
-test (which pools replicates into a single 2x2 table) or its t-test (which
-operates on derived log2 ratios), this test uses the raw per-replicate counts
-directly in a likelihood framework.
+fits a binomial GLM of site usage, \code{cbind(d_counts, p_counts) ~ design},
+on the per-replicate counts, and compares it with the same model without the
+tested term via a likelihood ratio test. Without \code{design} the model is
+\code{~ condition}; a design from \code{.RedDesign()} adds covariates
+(\code{covariate_formula}) and/or an interaction, so one LRT covers all
+cases. The same fit gives the Pearson dispersion (variation between
+replicates relative to the binomial; 1 = binomial) used by \code{RED_QL}.
 }
 \keyword{internal}

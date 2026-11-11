@@ -30,6 +30,7 @@ DEPsMatrix(
   covariates = NULL,
   sample_metadata = NULL,
   covariate_formula = NULL,
+  interaction = NULL,
   gene_meta_last_col = "transcript_info",
   peak_gene_key = "ensembl_gene_id",
   rna_gene_key = "ID",
@@ -40,7 +41,7 @@ DEPsMatrix(
   repeat_masker_positions = "Intron",
   drop_na_cols = TRUE,
   pair_rule = c("max", "top"),
-  red_tests = c("LRT", "fisher", "ttest"),
+  red_tests = c("LRT", "QL", "fisher", "ttest"),
   parallel = FALSE,
   ncores = NULL,
   BPPARAM = NULL,
@@ -165,8 +166,35 @@ See \strong{Value} for the \code{DPAU}/\code{gDPAU} columns.}
 
 \item{covariates}{Optional covariate columns passed to \code{DEPolyAPeaks()}.}
 
-\item{sample_metadata, covariate_formula}{Optional covariate handling passed
-to the RED core.}
+\item{sample_metadata}{Optional \code{data.frame} with one row per replicate
+and a \code{Sample_key} column equal to the replicate token at the end of
+the pseudobulk column names (\code{"<label>_<CellType>_<Sample_key>"}),
+plus the columns named in \code{covariate_formula} and \code{interaction}.
+Required when either of those is given. Replicate tokens must be unique
+within a group (a token shared by treatment and control, e.g. the same
+donor or organoid line, is the paired design).}
+
+\item{covariate_formula}{Optional right-hand side of additive covariates
+(columns of \code{sample_metadata}), e.g. \code{"Age + Pmi"} or, for a
+paired design, \code{"donor"}. Included in both the full and the null
+model of \code{RED_LRT} and \code{RED_QL}.}
+
+\item{interaction}{Optional name of a \code{sample_metadata} column (e.g.
+\code{"Strain"}). When given, the RED tests (\code{RED_LRT},
+\code{RED_QL}) test the interaction \code{condition:<interaction>} -- does
+the treatment-vs-control usage change differ between the levels of that
+variable? -- with the model
+\code{~ <covariates> + <interaction> + condition + condition:<interaction>}
+(terms aliased with the covariates, e.g. a genotype nested in a donor/line
+covariate, are dropped automatically). Each group must then contain
+replicates of every level, e.g. \code{treatment = "B6_Alcohol+3xTg_Alcohol"},
+\code{control = "B6_Control+3xTg_Control"} (labels joined by \code{"+"}).
+The first factor level is the reference (make the column a factor to
+choose it). The result gains \code{RED_in_<level>} (RED computed within
+each level) and, for a two-level variable, \code{RED_interaction}
+(\code{RED_in_<level2> - RED_in_<level1>}). \code{RED_fisher} and
+\code{RED_ttest} still compare treatment vs control (all levels pooled).
+Default \code{NULL} (test the treatment-vs-control change).}
 
 \item{gene_meta_last_col}{Name of the last RNA-metadata column to include in
 the gene-metadata join; columns 1 through this one are kept. Default
@@ -203,9 +231,9 @@ TE sites. Sites outside this set are never flagged (\code{FALSE}).}
 
 \item{drop_na_cols}{Logical. Drop columns of \code{red_scores} that are
 entirely \code{NA} -- e.g. with \code{Pasta = FALSE} all PASTA statistic
-columns are \code{NA} by construction, and \code{RED_LRT_cov_*} is
-\code{NA} without a \code{covariate_formula}. Default \code{TRUE}; set
-\code{FALSE} to keep a fixed column layout.}
+columns are \code{NA} by construction, and \code{RED_in_*} /
+\code{RED_interaction} are \code{NA} without an \code{interaction}.
+Default \code{TRUE}; set \code{FALSE} to keep a fixed column layout.}
 
 \item{pair_rule}{How the proximal/distal pair of each gene is chosen, per
 RED type. \code{"max"} (default): the pair with the largest combined
@@ -216,11 +244,32 @@ site and the most-used 3'-most-exon site downstream of it), which does not
 depend on the treatment-vs-control difference.}
 
 \item{red_tests}{Tests of the proximal/distal usage change reported per
-pair, any of \code{"LRT"} (binomial GLM likelihood-ratio test on
-per-replicate counts), \code{"fisher"} (Fisher's exact test on pooled
-counts) and \code{"ttest"} (t-test on per-replicate log2(d/p)). Each adds
-\code{RED_<test>_pval} / \code{RED_<test>_padj} (BH per cell type x
-comparison x RED type). Default all three; fewer = faster.}
+pair, any of
+\describe{
+  \item{\code{"LRT"}}{Binomial GLM likelihood-ratio test on per-replicate
+    counts, \code{cbind(distal, proximal) ~ <design>}, full model vs the
+    model without the tested term. The design is \code{~ condition}, plus
+    \code{covariate_formula} and \code{interaction} when given (one LRT for
+    all cases). Treats every read as independent, so it ignores the
+    extra variation between biological replicates and is anti-conservative
+    when replicates are overdispersed.}
+  \item{\code{"QL"}}{Quasi-likelihood test: the same binomial GLM and
+    design as \code{"LRT"}, but the extra variation between replicates is
+    estimated (Pearson dispersion of each pair, shrunk across all pairs of
+    the block towards a trend on read depth with
+    \code{limma::squeezeVar()}, i.e. empirical Bayes as in edgeR/limma
+    quasi-likelihood; floored at 1) and the change is tested with an
+    F-test. Accounts for replicate overdispersion. \code{RED_dispersion}
+    reports each pair's dispersion (1 = binomial). Needs at least one
+    residual degree of freedom; otherwise \code{NA}.}
+  \item{\code{"fisher"}}{Fisher's exact test on counts pooled across
+    replicates (treatment vs control).}
+  \item{\code{"ttest"}}{t-test on per-replicate log2(d/p) (treatment vs
+    control).}
+}
+Each adds \code{RED_<test>_pval} / \code{RED_<test>_padj} (BH per cell
+type x comparison x RED type); \code{RED_test} records the term tested by
+\code{RED_LRT} / \code{RED_QL}. Default all four; fewer = faster.}
 
 \item{parallel}{Logical. Compute the (cell type x comparison) blocks in
 parallel (BiocParallel; forking on macOS/Linux). Default \code{FALSE}
