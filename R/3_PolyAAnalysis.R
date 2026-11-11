@@ -271,6 +271,16 @@ Peaksdb <- function(seu, rmsk = NULL, genomic_positions, remove_te = TRUE) {
 #'
 #' @return Seurat object with cleaned polyA metadata
 #'
+#' @examples
+#' \dontrun{
+#' # drop coordinate and duplicated columns of the polyA feature metadata
+#' seurat_obj <- CleanPolyAMetadata(seurat_obj)
+#'
+#' # keep the coordinates, drop only duplicated columns
+#' seurat_obj <- CleanPolyAMetadata(seurat_obj, remove_coords = FALSE)
+#' colnames(seurat_obj[["polyA"]]@meta.features)
+#' }
+#'
 #' @export
 CleanPolyAMetadata <- function(
     obj,
@@ -1123,6 +1133,36 @@ PolyAPipeline <- function(seurat_obj,
 #' @return A combined track plot (\code{patchwork} object) with coverage, polyA
 #'   sites, peaks, and gene annotation tracks, plus the side panels when
 #'   requested.
+#'
+#' @examples
+#' \dontrun{
+#' deps <- DEPsMatrix(seurat_obj, comparisons, celltype_col = "Subpopulation",
+#'                    condition_cols = c("Treatment", "Strain"),
+#'                    group.by = c("Strain", "Treatment", "Subpopulation", "Number"),
+#'                    Pasta = FALSE)
+#' cols <- c("3xTg_Alcohol" = "#E8622A", "B6_Control" = "#818689")
+#'
+#' # Signac coverage of one cell type and comparison
+#' PolyAPlot(seu = seurat_obj, gene = "Camk2a",
+#'           deg_list = deps$red_scores, polyAdb = deps$polyAdb,
+#'           cell.type = "L2/3 IT", condition = "3xTg_Alcohol_vs_B6_Control",
+#'           condition_group_cols = c("Strain", "Treatment"),
+#'           species = "mouse", version = "mm10", polyARegion = TRUE, expand_bp = 2000,
+#'           group.by = c("Strain", "Treatment"), colors = cols)
+#'
+#' # coverage from the fragments: UMI-deduplicated, overlaid groups, site usage
+#' # and expression panels, more space on the right, protein-coding transcripts
+#' PolyAPlot(seu = seurat_obj, gene = "Camk2a",
+#'           deg_list = deps$red_scores, polyAdb = deps$polyAdb,
+#'           cell.type = "L2/3 IT", condition = "3xTg_Alcohol_vs_B6_Control",
+#'           condition_group_cols = c("Strain", "Treatment"),
+#'           species = "mouse", version = "mm10", polyARegion = TRUE,
+#'           expand_bp = c(500, 3000), group.by = c("Strain", "Treatment"), colors = cols,
+#'           normalize = "counts", dedup_umi = TRUE, overlay = TRUE,
+#'           replicate_col = "Number", show_replicates = TRUE,
+#'           usage_panel = TRUE, usage_type = "box", expression_panel = TRUE,
+#'           protein_coding_only = TRUE, transcript_text_size = 4)
+#' }
 #'
 #' @export
 #'
@@ -4959,6 +4999,15 @@ compute_statistics_LRT <- function(p_idx, d_idx, gene_processed,
 #' @seealso \code{\link{ExportBarcodes}} is typically followed by a shell call
 #'   to \code{subset-bam} to extract per-cell-type BAM files for tools such as
 #'   MAAPER or PASTA.
+#'
+#' @examples
+#' \dontrun{
+#' seurat_obj$Treatment_Strain <- paste(seurat_obj$Treatment, seurat_obj$Strain, sep = "_")
+#' files <- ExportBarcodes(seurat_obj, output_dir = "barcodes",
+#'                         celltype_col = "CellType", barcode_col = "Barcode",
+#'                         group = "Treatment_Strain")
+#' # -> barcodes/<condition>/<condition>_<cell type>_barcodes.txt
+#' }
 #'
 #' @export
 #'

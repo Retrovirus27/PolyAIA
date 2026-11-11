@@ -180,6 +180,19 @@ QCFilter <- function(
 #'
 #'
 #' @return Combined patchwork plot object
+#' @examples
+#' \dontrun{
+#' # all plots
+#' QCPlot(seurat_obj)
+#'
+#' # violins and cells per sample, with the filter thresholds drawn
+#' QCPlot(seurat_obj, plot_types = c("violin", "bar"), split_by = "Sample",
+#'        min_counts = 500, max_features = 6000, mito_cutoff = 5)
+#'
+#' # histograms split by two variables, 2 columns
+#' QCPlot(seurat_obj, plot_types = "histogram", split_by = c("Sex", "Disease"), n_col = 2)
+#' }
+#'
 #' @export
 QCPlot <- function(
     seurat_obj,
@@ -595,6 +608,20 @@ QCPlot <- function(
 #'   The session's random state is restored afterwards.
 #'
 #' @return A ggplot2 object
+#'
+#' @examples
+#' \dontrun{
+#' # cell types with labels
+#' UmapPlot(seurat_obj, color = "Subpopulation", label_by = "Subpopulation",
+#'          show_labels = TRUE, show_numbers = TRUE)
+#'
+#' # two strains interleaved (shuffle), one panel per treatment
+#' UmapPlot(seurat_obj, color = "Strain", split_by = "Treatment")
+#'
+#' # continuous variable, smaller plain labels
+#' UmapPlot(seurat_obj, color = "percent_mito", limits = c(0, 10), breaks = seq(0, 10, 2),
+#'          sizes = c(9, 0.5, 11, 10, 10, 4), label_bold = FALSE)
+#' }
 #'
 #' @export
 #' @concept visualization

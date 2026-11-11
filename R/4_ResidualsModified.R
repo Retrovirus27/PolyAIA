@@ -296,6 +296,17 @@ DirichletMultinomial <- function(
 #'     \item m: Observed counts matrix (features x cells)
 #'   }
 #'
+#' @examples
+#' \dontrun{
+#' # Internal step of CalcPolyAResidualsPolyA(): `res` holds the per-gene
+#' # Dirichlet-Multinomial fits (`residuals`) and the counts (`counts`).
+#' AR <- AssembleResiduals(res)
+#' dim(AR$ec); dim(AR$var); dim(AR$m)
+#'
+#' # normally run end to end:
+#' seurat_obj <- CalcPolyAResidualsPolyA(seurat_obj, background = "Control")
+#' }
+#'
 #' @export
 #' @concept residuals
 #'
@@ -375,6 +386,21 @@ AssembleResiduals <- function(res, verbose = TRUE) {
 #'
 #' @return Regularized variance matrix (features x cells) with same dimensions as input
 #'
+#'
+#' @examples
+#' \dontrun{
+#' # Internal step of CalcPolyAResidualsPolyA(), after AssembleResiduals():
+#' AR <- AssembleResiduals(res)
+#' var_reg <- RegDMVarPolyA(ec = AR$ec, var = AR$var, m = AR$m,
+#'                          m.background = m.background,
+#'                          background.dist = background.dist,
+#'                          gene.sum = gene.sum,
+#'                          background.cells = background.cells,
+#'                          min.variance = 0.1, number.bins = 30, sample.n = 1000)
+#'
+#' # normally run end to end:
+#' seurat_obj <- CalcPolyAResidualsPolyA(seurat_obj, background = "Control")
+#' }
 #'
 #' @export
 #'

@@ -45,6 +45,28 @@
 #'
 #' @return A \code{Seurat} object with annotated metadata
 #'
+#' @examples
+#' \dontrun{
+#' # one <sample>_filtered_feature_bc_matrix.h5 per sample in data_dir and a
+#' # metadata CSV with one row per sample (column_id = the sample name)
+#' seurat_obj <- UploadSce(
+#'   data_dir      = "2_h5_files/",
+#'   file_pattern  = "_filtered_feature_bc_matrix.h5",
+#'   metadata_file = "4_MetaData/Metadata.csv",
+#'   column_id     = "Sample_accession",
+#'   species       = "mouse",
+#'   reference     = "mousecortexref",
+#'   genome_build  = "mm10",
+#'   IDtype        = "ENSEMBL"
+#' )
+#' table(seurat_obj$Sample, seurat_obj$Subpopulation)
+#'
+#' # without cell type annotation (annotate later with AzimuthAnnotation())
+#' seurat_obj <- UploadSce(data_dir = "2_h5_files/", metadata_file = "4_MetaData/Metadata.csv",
+#'                         species = "human", reference = "humancortexref",
+#'                         genome_build = "hg38", run_azimuth = FALSE)
+#' }
+#'
 #' @export
 UploadSce <- function(data_dir = "Data/SCE_1/",
                       file_pattern = "_feature_bc_matrix.h5",
