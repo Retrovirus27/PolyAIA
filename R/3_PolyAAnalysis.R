@@ -805,7 +805,9 @@ FilterPeaks <- function(polyA.assays,
                   else paste0("Common peaks by condition (", paste(biotypes, collapse = ", "), ")"),
           x = "Number of Samples in the condition",
           y = "Number of Peaks" ) +
-        ggplot2::scale_x_continuous(breaks = function(lim) seq(0, floor(lim[2]))) +
+        # small fixed margin so the last break is the condition size (n), not n + 1
+        ggplot2::scale_x_continuous(breaks = function(lim) seq(0, floor(lim[2])),
+                                    expand = ggplot2::expansion(add = 0.1)) +
         th +
         ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
         ggplot2::scale_y_continuous(
