@@ -494,6 +494,10 @@ AnnotatePolyADb <- function(seu,
 #'   peak must be present. Default \code{1} = all of them; e.g. \code{0.9}
 #'   tolerates a few samples where the peak was not called.
 #' @param plot Logical. Print the diagnostic plots. Default \code{TRUE}.
+#' @param split_by Logical. With \code{group_col}, split both plots by
+#'   condition: peaks per sample, and for the kept peaks the number of samples
+#'   of each condition that have them (0 = peak absent in that condition).
+#'   Default \code{FALSE}.
 #' @param verbose Logical. Print the filter summaries. Default \code{TRUE}.
 #'
 #' @return A list with:
@@ -561,7 +565,7 @@ AnnotatePolyADb <- function(seu,
 #'                             polyAdb.file = "4_MetaData/polyAdb_hg38.txt",
 #'                             biotypes = "protein_coding", max.dist = 50,
 #'                             metadata = meta, sample_col = "Sample_accession",
-#'                             group_col = "Disease")
+#'                             group_col = "Disease", split_by = TRUE)
 #' table(results_cond$PeakMeta$present_in[results_cond$PeakMeta$kept])
 #' # the selection is already made: requantify every kept peak
 #' seurat_obj <- PolyAPipeline(seurat_obj, my_polyA_assays, results_cond, threshold = 1,
@@ -587,6 +591,7 @@ FilterPeaks <- function(polyA.assays,
                         group_col        = NULL,
                         min_group_frac   = 1,
                         plot             = TRUE,
+                        split_by         = FALSE,
                         verbose          = TRUE) {
   # Before merging, standardize peaks across all samples
   # 1. Extract all GRanges from individual assays
@@ -753,11 +758,19 @@ FilterPeaks <- function(polyA.assays,
     cbind(sample = nm, d, stringsAsFactors = FALSE)
   }))
 
+  if (isTRUE(split_by) && !use_group) {
+    warning("`split_by = TRUE` needs `metadata` and `group_col`; plots are not split.")
+  }
+  split_plot <- isTRUE(split_by) && use_group
+
   if (isTRUE(plot)) {
     # Number of peaks per sample
     samples <- names(polyA.assays)
+    peaks_df <- data.frame(sample = samples,
+                           n_peaks = sapply(polyA.assays, function(x) length(granges(x))))
+    if (split_plot) peaks_df$condition <- grp    # grp follows names(polyA.assays)
     Sample_peaks <-
-      data.frame(sample = samples, n_peaks = sapply(polyA.assays, function(x) length(granges(x)))) %>%
+      peaks_df %>%
       ggplot2::ggplot(ggplot2::aes(x = sample, y = n_peaks)) +
       ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
       ggplot2::labs(
@@ -769,23 +782,53 @@ FilterPeaks <- function(polyA.assays,
       ggplot2::scale_y_continuous(
         labels = scales::comma,
         n.breaks = 6 )
+    if (split_plot) {
+      Sample_peaks <- Sample_peaks +
+        ggplot2::facet_grid(cols = ggplot2::vars(condition), scales = "free_x", space = "free_x")
+    }
     # Number of peaks shared by sample
-    Sample_shared <-
-      data.frame(peak_sample_counts) %>%
-      dplyr::count(peak_sample_counts) %>%
-      ggplot2::ggplot(ggplot2::aes(x = peak_sample_counts, y = n)) +
-      ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
-      ggplot2::labs(
-        title = if (is.null(biotypes)) "Common peaks Across Samples"
-                else paste0("Common peaks Across Samples (", paste(biotypes, collapse = ", "), ")"),
-        x = "Number of Samples",
-        y = "Number of Peaks" ) +
-      ggplot2::scale_x_continuous(breaks = 1:max(peak_sample_counts)) +
-      th +
-      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
-      ggplot2::scale_y_continuous(
-        labels = scales::comma,
-        n.breaks = 6  )
+    if (split_plot) {
+      # kept peaks: in how many samples of each condition they are present
+      n_grp <- table(grp)
+      shared_df <- dplyr::bind_rows(lapply(colnames(grp_frac), function(g) {
+        data.frame(condition = g,
+                   peak_sample_counts = as.integer(round(grp_frac[keep, g] * n_grp[[g]])))
+      })) %>%
+        dplyr::count(condition, peak_sample_counts)
+      Sample_shared <-
+        shared_df %>%
+        ggplot2::ggplot(ggplot2::aes(x = peak_sample_counts, y = n)) +
+        ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
+        ggplot2::facet_grid(cols = ggplot2::vars(condition), scales = "free_x", space = "free_x") +
+        ggplot2::labs(
+          title = if (is.null(biotypes)) "Common peaks by condition"
+                  else paste0("Common peaks by condition (", paste(biotypes, collapse = ", "), ")"),
+          x = "Number of Samples in the condition",
+          y = "Number of Peaks" ) +
+        ggplot2::scale_x_continuous(breaks = function(lim) seq(0, floor(lim[2]))) +
+        th +
+        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
+        ggplot2::scale_y_continuous(
+          labels = scales::comma,
+          n.breaks = 6  )
+    } else {
+      Sample_shared <-
+        data.frame(peak_sample_counts) %>%
+        dplyr::count(peak_sample_counts) %>%
+        ggplot2::ggplot(ggplot2::aes(x = peak_sample_counts, y = n)) +
+        ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
+        ggplot2::labs(
+          title = if (is.null(biotypes)) "Common peaks Across Samples"
+                  else paste0("Common peaks Across Samples (", paste(biotypes, collapse = ", "), ")"),
+          x = "Number of Samples",
+          y = "Number of Peaks" ) +
+        ggplot2::scale_x_continuous(breaks = 1:max(peak_sample_counts)) +
+        th +
+        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45 , hjust = 1, vjust = 1)) +
+        ggplot2::scale_y_continuous(
+          labels = scales::comma,
+          n.breaks = 6  )
+    }
 
     # Display plots side by side - FOR R MARKDOWN
     combined_plot <- Sample_peaks | Sample_shared
