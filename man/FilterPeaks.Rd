@@ -13,7 +13,12 @@ FilterPeaks(
   biotype_col = "gene_biotype",
   location_col = "Intron.exon.location",
   max.dist = 50,
+  metadata = NULL,
+  sample_col = "Sample_accession",
+  group_col = NULL,
+  min_group_frac = 1,
   plot = TRUE,
+  split_by = FALSE,
   verbose = TRUE
 )
 }
@@ -47,22 +52,43 @@ of the site. Default \code{"Intron.exon.location"}.}
 polyA_DB site. Default \code{50}, as in \code{PASTA::GetPolyADbAnnotation()};
 use the same value there.}
 
+\item{metadata, sample_col, group_col}{Optional condition filter. \code{metadata}
+is a sample table; \code{sample_col} is its column with the sample names
+(the names of \code{polyA.assays}, e.g. \code{"Sample_accession"}) and
+\code{group_col} the condition of each sample (e.g. \code{"Disease"}).
+A peak is kept if it is present in all the samples of at least one
+condition (e.g. in all controls, or in all AD), so a site used in one
+condition and not in the other is kept. \code{NULL} (default) = no
+condition filter.}
+
+\item{min_group_frac}{Fraction of the samples of a condition in which the
+peak must be present. Default \code{1} = all of them; e.g. \code{0.9}
+tolerates a few samples where the peak was not called.}
+
 \item{plot}{Logical. Print the diagnostic plots. Default \code{TRUE}.}
 
-\item{verbose}{Logical. Print the biotype-filter summary. Default \code{TRUE}.}
+\item{split_by}{Logical. With \code{group_col}, split both plots by
+condition: peaks per sample, and for the kept peaks the number of samples
+of each condition that have them (0 = peak absent in that condition).
+Default \code{FALSE}.}
+
+\item{verbose}{Logical. Print the filter summaries. Default \code{TRUE}.}
 }
 \value{
 A list with:
   \describe{
     \item{Ranges}{A \code{GRanges} object containing the unified peak set after
       reducing overlaps across all samples (strand-aware); only the kept peaks
-      when \code{biotypes} is set.}
+      when \code{biotypes} or \code{group_col} is set.}
     \item{CommonPeaks}{An integer vector indicating the number of samples that
       overlap with each peak in \code{Ranges}.}
-    \item{PeakMeta}{When a polyA_DB is given: one row per unified peak,
-      ALL of them (before filtering): \code{peak}, \code{n_samples},
-      \code{distance} to the nearest polyA_DB site, \code{biotype},
-      \code{location}, \code{kept}. \code{NULL} otherwise.}
+    \item{PeakMeta}{When a polyA_DB or \code{group_col} is given: one row per
+      unified peak, ALL of them (before filtering): \code{peak},
+      \code{n_samples}, \code{distance} to the nearest polyA_DB site,
+      \code{biotype}, \code{location}, with \code{group_col} the fraction of
+      samples of each condition with the peak (\code{in_<condition>}) and
+      \code{present_in} (conditions where it reaches \code{min_group_frac}),
+      and \code{kept}. \code{NULL} otherwise.}
     \item{SampleSummary}{Peaks per sample. With a polyA_DB: counts per
       \code{sample} x \code{location} x \code{biotype} x \code{kept} (each
       original peak inherits the annotation of its unified peak); without:
@@ -115,6 +141,18 @@ results_pc <- FilterPeaks(my_polyA_assays, multiple_samples = TRUE,
                           polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
                           biotypes = "protein_coding", max.dist = 50)
 table(results_pc$Audit$biotype, useNA = "ifany")
+
+# Present in all the samples of at least one condition (all controls or all AD)
+meta <- read.csv("4_MetaData/Metadata.csv")
+results_cond <- FilterPeaks(my_polyA_assays, multiple_samples = TRUE,
+                            polyAdb.file = "4_MetaData/polyAdb_hg38.txt",
+                            biotypes = "protein_coding", max.dist = 50,
+                            metadata = meta, sample_col = "Sample_accession",
+                            group_col = "Disease", split_by = TRUE)
+table(results_cond$PeakMeta$present_in[results_cond$PeakMeta$kept])
+# the selection is already made: requantify every kept peak
+seurat_obj <- PolyAPipeline(seurat_obj, my_polyA_assays, results_cond, threshold = 1,
+                            genome = "hg38", polyAdb.file = "4_MetaData/polyAdb_hg38.txt")
 }
 
 }

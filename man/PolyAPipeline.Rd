@@ -27,7 +27,8 @@ PolyAPipeline(
 \item{unified.peaks}{Output of \code{FilterPeaks()}.}
 
 \item{threshold}{Minimum number of samples a unified peak must be present in
-(passed to \code{RequantifyPolyA()}).}
+(passed to \code{RequantifyPolyA()}). Use \code{1} when
+\code{FilterPeaks(group_col = ...)} already selected the peaks.}
 
 \item{genome}{Genome build: \code{"mm10"}, \code{"hg38"}, \code{"hg19"} or
 \code{"mm39"}. Used for the assays and the gene annotation.}
