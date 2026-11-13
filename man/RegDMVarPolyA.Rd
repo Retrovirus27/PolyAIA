@@ -50,3 +50,19 @@ and variance matrices from a Dirichlet-Multinomial model. Uses stratified
 sampling and binning to efficiently estimate smoothed variance across the
 expected count and gene sum space.
 }
+\examples{
+\dontrun{
+# Internal step of CalcPolyAResidualsPolyA(), after AssembleResiduals():
+AR <- AssembleResiduals(res)
+var_reg <- RegDMVarPolyA(ec = AR$ec, var = AR$var, m = AR$m,
+                         m.background = m.background,
+                         background.dist = background.dist,
+                         gene.sum = gene.sum,
+                         background.cells = background.cells,
+                         min.variance = 0.1, number.bins = 30, sample.n = 1000)
+
+# normally run end to end:
+seurat_obj <- CalcPolyAResidualsPolyA(seurat_obj, background = "Control")
+}
+
+}

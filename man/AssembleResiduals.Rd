@@ -24,4 +24,16 @@ List with three components:
 Combines Dirichlet-Multinomial results across all genes into
 expected counts (ec), variance (var), and observed counts (m) matrices.
 }
+\examples{
+\dontrun{
+# Internal step of CalcPolyAResidualsPolyA(): `res` holds the per-gene
+# Dirichlet-Multinomial fits (`residuals`) and the counts (`counts`).
+AR <- AssembleResiduals(res)
+dim(AR$ec); dim(AR$var); dim(AR$m)
+
+# normally run end to end:
+seurat_obj <- CalcPolyAResidualsPolyA(seurat_obj, background = "Control")
+}
+
+}
 \concept{residuals}

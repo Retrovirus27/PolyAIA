@@ -52,6 +52,16 @@ written with \code{write.table()} (no row names, no column names, no
 quotes), one barcode per line. Progress is reported via \code{message()}
 for each successfully written file.
 }
+\examples{
+\dontrun{
+seurat_obj$Treatment_Strain <- paste(seurat_obj$Treatment, seurat_obj$Strain, sep = "_")
+files <- ExportBarcodes(seurat_obj, output_dir = "barcodes",
+                        celltype_col = "CellType", barcode_col = "Barcode",
+                        group = "Treatment_Strain")
+# -> barcodes/<condition>/<condition>_<cell type>_barcodes.txt
+}
+
+}
 \seealso{
 \code{\link{ExportBarcodes}} is typically followed by a shell call
   to \code{subset-bam} to extract per-cell-type BAM files for tools such as

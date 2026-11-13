@@ -95,4 +95,19 @@ A ggplot2 object
 Generate customizable UMAP or other dimensionality reduction plots with
 optional faceting, labels, and color schemes for continuous or discrete variables.
 }
+\examples{
+\dontrun{
+# cell types with labels
+UmapPlot(seurat_obj, color = "Subpopulation", label_by = "Subpopulation",
+         show_labels = TRUE, show_numbers = TRUE)
+
+# two strains interleaved (shuffle), one panel per treatment
+UmapPlot(seurat_obj, color = "Strain", split_by = "Treatment")
+
+# continuous variable, smaller plain labels
+UmapPlot(seurat_obj, color = "percent_mito", limits = c(0, 10), breaks = seq(0, 10, 2),
+         sizes = c(9, 0.5, 11, 10, 10, 4), label_bold = FALSE)
+}
+
+}
 \concept{visualization}

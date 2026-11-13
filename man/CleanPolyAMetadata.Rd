@@ -26,3 +26,14 @@ Seurat object with cleaned polyA metadata
 \description{
 Clean PolyA Metadata by Removing Duplicate and Positional Columns
 }
+\examples{
+\dontrun{
+# drop coordinate and duplicated columns of the polyA feature metadata
+seurat_obj <- CleanPolyAMetadata(seurat_obj)
+
+# keep the coordinates, drop only duplicated columns
+seurat_obj <- CleanPolyAMetadata(seurat_obj, remove_coords = FALSE)
+colnames(seurat_obj[["polyA"]]@meta.features)
+}
+
+}

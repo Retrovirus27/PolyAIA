@@ -316,3 +316,34 @@ With the defaults the coverage comes from
   (e.g. \code{"B6_Alcohol"} for \code{split.by = "Strain"},
   \code{group.by = "Treatment"}).
 }
+\examples{
+\dontrun{
+deps <- DEPsMatrix(seurat_obj, comparisons, celltype_col = "Subpopulation",
+                   condition_cols = c("Treatment", "Strain"),
+                   group.by = c("Strain", "Treatment", "Subpopulation", "Number"),
+                   Pasta = FALSE)
+cols <- c("3xTg_Alcohol" = "#E8622A", "B6_Control" = "#818689")
+
+# Signac coverage of one cell type and comparison
+PolyAPlot(seu = seurat_obj, gene = "Camk2a",
+          deg_list = deps$red_scores, polyAdb = deps$polyAdb,
+          cell.type = "L2/3 IT", condition = "3xTg_Alcohol_vs_B6_Control",
+          condition_group_cols = c("Strain", "Treatment"),
+          species = "mouse", version = "mm10", polyARegion = TRUE, expand_bp = 2000,
+          group.by = c("Strain", "Treatment"), colors = cols)
+
+# coverage from the fragments: UMI-deduplicated, overlaid groups, site usage
+# and expression panels, more space on the right, protein-coding transcripts
+PolyAPlot(seu = seurat_obj, gene = "Camk2a",
+          deg_list = deps$red_scores, polyAdb = deps$polyAdb,
+          cell.type = "L2/3 IT", condition = "3xTg_Alcohol_vs_B6_Control",
+          condition_group_cols = c("Strain", "Treatment"),
+          species = "mouse", version = "mm10", polyARegion = TRUE,
+          expand_bp = c(500, 3000), group.by = c("Strain", "Treatment"), colors = cols,
+          normalize = "counts", dedup_umi = TRUE, overlay = TRUE,
+          replicate_col = "Number", show_replicates = TRUE,
+          usage_panel = TRUE, usage_type = "box", expression_panel = TRUE,
+          protein_coding_only = TRUE, transcript_text_size = 4)
+}
+
+}

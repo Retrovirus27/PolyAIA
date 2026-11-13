@@ -92,3 +92,17 @@ Combined patchwork plot object
 \description{
 Create comprehensive QC plots for Seurat objects
 }
+\examples{
+\dontrun{
+# all plots
+QCPlot(seurat_obj)
+
+# violins and cells per sample, with the filter thresholds drawn
+QCPlot(seurat_obj, plot_types = c("violin", "bar"), split_by = "Sample",
+       min_counts = 500, max_features = 6000, mito_cutoff = 5)
+
+# histograms split by two variables, 2 columns
+QCPlot(seurat_obj, plot_types = "histogram", split_by = c("Sex", "Disease"), n_col = 2)
+}
+
+}
