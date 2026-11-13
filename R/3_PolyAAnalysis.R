@@ -482,20 +482,34 @@ AnnotatePolyADb <- function(seu,
 #' @param max.dist Maximum distance (nt) between a peak's 3' end and its
 #'   polyA_DB site. Default \code{50}, as in \code{PASTA::GetPolyADbAnnotation()};
 #'   use the same value there.
+#' @param metadata,sample_col,group_col Optional condition filter. \code{metadata}
+#'   is a sample table; \code{sample_col} is its column with the sample names
+#'   (the names of \code{polyA.assays}, e.g. \code{"Sample_accession"}) and
+#'   \code{group_col} the condition of each sample (e.g. \code{"Disease"}).
+#'   A peak is kept if it is present in all the samples of at least one
+#'   condition (e.g. in all controls, or in all AD), so a site used in one
+#'   condition and not in the other is kept. \code{NULL} (default) = no
+#'   condition filter.
+#' @param min_group_frac Fraction of the samples of a condition in which the
+#'   peak must be present. Default \code{1} = all of them; e.g. \code{0.9}
+#'   tolerates a few samples where the peak was not called.
 #' @param plot Logical. Print the diagnostic plots. Default \code{TRUE}.
-#' @param verbose Logical. Print the biotype-filter summary. Default \code{TRUE}.
+#' @param verbose Logical. Print the filter summaries. Default \code{TRUE}.
 #'
 #' @return A list with:
 #'   \describe{
 #'     \item{Ranges}{A \code{GRanges} object containing the unified peak set after
 #'       reducing overlaps across all samples (strand-aware); only the kept peaks
-#'       when \code{biotypes} is set.}
+#'       when \code{biotypes} or \code{group_col} is set.}
 #'     \item{CommonPeaks}{An integer vector indicating the number of samples that
 #'       overlap with each peak in \code{Ranges}.}
-#'     \item{PeakMeta}{When a polyA_DB is given: one row per unified peak,
-#'       ALL of them (before filtering): \code{peak}, \code{n_samples},
-#'       \code{distance} to the nearest polyA_DB site, \code{biotype},
-#'       \code{location}, \code{kept}. \code{NULL} otherwise.}
+#'     \item{PeakMeta}{When a polyA_DB or \code{group_col} is given: one row per
+#'       unified peak, ALL of them (before filtering): \code{peak},
+#'       \code{n_samples}, \code{distance} to the nearest polyA_DB site,
+#'       \code{biotype}, \code{location}, with \code{group_col} the fraction of
+#'       samples of each condition with the peak (\code{in_<condition>}) and
+#'       \code{present_in} (conditions where it reaches \code{min_group_frac}),
+#'       and \code{kept}. \code{NULL} otherwise.}
 #'     \item{SampleSummary}{Peaks per sample. With a polyA_DB: counts per
 #'       \code{sample} x \code{location} x \code{biotype} x \code{kept} (each
 #'       original peak inherits the annotation of its unified peak); without:
@@ -540,6 +554,18 @@ AnnotatePolyADb <- function(seu,
 #'                           polyAdb.file = "4_MetaData/polyAdb_mm10.txt",
 #'                           biotypes = "protein_coding", max.dist = 50)
 #' table(results_pc$Audit$biotype, useNA = "ifany")
+#'
+#' # Present in all the samples of at least one condition (all controls or all AD)
+#' meta <- read.csv("4_MetaData/Metadata.csv")
+#' results_cond <- FilterPeaks(my_polyA_assays, multiple_samples = TRUE,
+#'                             polyAdb.file = "4_MetaData/polyAdb_hg38.txt",
+#'                             biotypes = "protein_coding", max.dist = 50,
+#'                             metadata = meta, sample_col = "Sample_accession",
+#'                             group_col = "Disease")
+#' table(results_cond$PeakMeta$present_in[results_cond$PeakMeta$kept])
+#' # the selection is already made: requantify every kept peak
+#' seurat_obj <- PolyAPipeline(seurat_obj, my_polyA_assays, results_cond, threshold = 1,
+#'                             genome = "hg38", polyAdb.file = "4_MetaData/polyAdb_hg38.txt")
 #' }
 #'
 #' @importFrom GenomicRanges granges reduce countOverlaps GRangesList
@@ -556,6 +582,10 @@ FilterPeaks <- function(polyA.assays,
                         biotype_col      = "gene_biotype",
                         location_col     = "Intron.exon.location",
                         max.dist         = 50,
+                        metadata         = NULL,
+                        sample_col       = "Sample_accession",
+                        group_col        = NULL,
+                        min_group_frac   = 1,
                         plot             = TRUE,
                         verbose          = TRUE) {
   # Before merging, standardize peaks across all samples
@@ -575,6 +605,42 @@ FilterPeaks <- function(polyA.assays,
   } else {
     # For single sample, count total overlapping ranges per peak
     peak_sample_counts <- GenomicRanges::countOverlaps(unified.peaks, unified.ranges, ignore.strand = FALSE)
+  }
+
+  # 2b. Optional condition filter: fraction of the samples of each condition
+  #     in which the unified peak is present (called); kept if it reaches
+  #     `min_group_frac` (default 1 = all samples) in at least one condition.
+  use_group <- !is.null(group_col)
+  grp_frac  <- NULL
+  if (use_group) {
+    if (is.null(metadata)) stop("Give `metadata` (sample table) with `group_col`.")
+    metadata <- as.data.frame(metadata)
+    if (!sample_col %in% colnames(metadata)) stop("`sample_col` '", sample_col, "' not in `metadata`.")
+    if (!group_col  %in% colnames(metadata)) stop("`group_col` '", group_col, "' not in `metadata`.")
+    if (!is.numeric(min_group_frac) || length(min_group_frac) != 1 ||
+        min_group_frac <= 0 || min_group_frac > 1) {
+      stop("`min_group_frac` must be a number in (0, 1].")
+    }
+    smp <- names(all.ranges)
+    if (is.null(smp)) stop("`polyA.assays` must be named by sample to use `group_col`.")
+    gi <- match(smp, as.character(metadata[[sample_col]]))
+    if (anyNA(gi)) {
+      stop("Sample(s) of polyA.assays not found in metadata$", sample_col, ": ",
+           paste(smp[is.na(gi)], collapse = ", "))
+    }
+    grp <- as.character(metadata[[group_col]])[gi]
+    if (anyNA(grp)) stop("metadata$", group_col, " is NA for some samples.")
+    # presence of every unified peak in each sample, summed per condition
+    # (one sample at a time: no peaks x samples matrix in memory)
+    grp_frac <- sapply(split(smp, grp), function(ss) {
+      n_in <- Reduce(`+`, lapply(ss, function(s)
+        GenomicRanges::countOverlaps(unified.peaks, all.ranges[[s]], ignore.strand = FALSE) > 0))
+      n_in / length(ss)
+    })
+    if (is.null(dim(grp_frac))) {
+      grp_frac <- matrix(grp_frac, nrow = length(unified.peaks),
+                         dimnames = list(NULL, sort(unique(grp))))
+    }
   }
 
   # 3. Optional gene-biotype filter via polyA_DB (same matching rule as
@@ -615,17 +681,6 @@ FilterPeaks <- function(polyA.assays,
     }
 
     if (!is.null(biotypes)) keep <- bt %in% biotypes
-    audit <- data.frame(
-      peak      = paste(GenomicRanges::seqnames(unified.peaks), GenomicRanges::start(unified.peaks),
-                        GenomicRanges::end(unified.peaks), GenomicRanges::strand(unified.peaks),
-                        sep = "-"),
-      n_samples = as.integer(peak_sample_counts),
-      distance  = dist,
-      biotype   = bt,
-      location  = loc,
-      kept      = keep,
-      stringsAsFactors = FALSE
-    )
 
     if (verbose && !is.null(biotypes)) {
       message(sprintf(
@@ -637,6 +692,46 @@ FilterPeaks <- function(polyA.assays,
               paste0(names(tb)[seq_len(min(8, length(tb)))], " = ",
                      tb[seq_len(min(8, length(tb)))], collapse = ", "))
     }
+  }
+
+  # Condition filter, combined with the biotype filter
+  present_in <- NULL
+  if (use_group) {
+    ok_grp <- grp_frac >= min_group_frac - 1e-9
+    present_in <- apply(ok_grp, 1, function(v) {
+      if (all(v)) "all" else if (!any(v)) "none" else paste(colnames(grp_frac)[v], collapse = "+")
+    })
+    keep_grp <- rowSums(ok_grp) > 0
+    if (verbose) {
+      tb <- table(present_in[keep & keep_grp])
+      message(sprintf(
+        "Condition filter (%s; present in >= %s of the samples of at least one condition):\n  %d of %d peaks kept%s",
+        group_col, if (min_group_frac >= 1) "all" else paste0(round(100 * min_group_frac), "%"),
+        sum(keep & keep_grp), sum(keep),
+        if (!is.null(biotypes)) " (after the biotype filter)" else ""))
+      message("  Kept, by condition: ",
+              paste0(names(tb), " = ", as.integer(tb), collapse = ", "))
+    }
+    keep <- keep & keep_grp
+  }
+
+  if (annotate || use_group) {
+    audit <- data.frame(
+      peak      = paste(GenomicRanges::seqnames(unified.peaks), GenomicRanges::start(unified.peaks),
+                        GenomicRanges::end(unified.peaks), GenomicRanges::strand(unified.peaks),
+                        sep = "-"),
+      n_samples = as.integer(peak_sample_counts),
+      distance  = if (annotate) dist else NA_integer_,
+      biotype   = bt,
+      location  = loc,
+      stringsAsFactors = FALSE
+    )
+    if (use_group) {
+      for (g in colnames(grp_frac)) audit[[paste0("in_", g)]] <- round(grp_frac[, g], 3)
+      audit$present_in <- present_in
+    }
+    audit$kept <- keep
+
 
     unified.peaks      <- unified.peaks[keep]
     peak_sample_counts <- peak_sample_counts[keep]
@@ -649,7 +744,7 @@ FilterPeaks <- function(polyA.assays,
   sample_summary <- dplyr::bind_rows(lapply(names(all.ranges), function(nm) {
     idx <- GenomicRanges::findOverlaps(all.ranges[[nm]], unified.all,
                                        ignore.strand = FALSE, select = "first")
-    if (!annotate) {
+    if (!annotate && !use_group) {
       return(data.frame(sample = nm, n = length(all.ranges[[nm]]), stringsAsFactors = FALSE))
     }
     d <- data.frame(location = loc[idx], biotype = bt[idx], kept = keep[idx],
@@ -823,7 +918,8 @@ RequantifyPolyA <- function(polyA.assays,
 #'   (\code{UploadPolyAAssays()}).
 #' @param unified.peaks Output of \code{FilterPeaks()}.
 #' @param threshold Minimum number of samples a unified peak must be present in
-#'   (passed to \code{RequantifyPolyA()}).
+#'   (passed to \code{RequantifyPolyA()}). Use \code{1} when
+#'   \code{FilterPeaks(group_col = ...)} already selected the peaks.
 #' @param genome Genome build: \code{"mm10"}, \code{"hg38"}, \code{"hg19"} or
 #'   \code{"mm39"}. Used for the assays and the gene annotation.
 #' @param ensdb \code{EnsDb} object for the gene annotation. \code{NULL}
