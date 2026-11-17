@@ -14,3 +14,6 @@
 ^README\.md$
 ^backup$
 ^LICENSE\.md$
+^AGENTS\.md$
+^CLAUDE\.md$
+^docs$
