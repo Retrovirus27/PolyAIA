@@ -776,6 +776,13 @@ UploadData <- function(data, DataName, Condition = NULL, RefAnnotation1 = NULL, 
 #' the per-sample layers (Harmony by default), merge the layers back, and
 #' compute a 2D UMAP from the integrated space -- all in one call.
 #'
+#' The function can be run more than once on the same object for different
+#' assays (e.g. \code{"RNA"} and then \code{"polyA"}, as input to
+#' \code{Seurat::FindMultiModalNeighbors()}). For that, give each run its own
+#' \code{pca.name}, \code{new.reduction} and \code{reduction.name} so the
+#' second run does not overwrite the first run's reductions; reduction keys
+#' are derived from those names automatically unless set explicitly.
+#'
 #' @param seurat_obj A Seurat object, normally already QC-filtered.
 #' @param sample_col Metadata column identifying each cell's sample, used to
 #'   split assay layers before integration -- required by
@@ -788,13 +795,28 @@ UploadData <- function(data, DataName, Condition = NULL, RefAnnotation1 = NULL, 
 #' @param nfeatures Number of variable features to select. Default \code{2000}.
 #' @param method Integration method passed to \code{Seurat::IntegrateLayers()}.
 #'   Default \code{Seurat::HarmonyIntegration}.
+#' @param pca.name Name of the (unintegrated) PCA reduction to create. Default
+#'   \code{"pca"}. Use a different name (e.g. \code{"pca_polyA"}) when running
+#'   the pipeline on a second assay, otherwise the first assay's PCA is
+#'   overwritten.
+#' @param pca.key Key prefix for the PCA columns. \code{NULL} (default) uses
+#'   \code{"PC_"} when \code{pca.name = "pca"}, and otherwise a key derived from
+#'   \code{pca.name} (e.g. \code{"pcapolyA_"}), since two reductions in one
+#'   object cannot share a key.
 #' @param new.reduction Name of the integrated reduction to create. Default
 #'   \code{"harmony"}.
+#' @param integration.key Key prefix for the integrated reduction's columns.
+#'   \code{NULL} (default) keeps the integration method's own default key
+#'   (\code{"harmony_"} for Harmony) when \code{new.reduction = "harmony"},
+#'   and otherwise derives one from \code{new.reduction} (e.g.
+#'   \code{"harmonypolyA_"}). Passed to the method as \code{key} when it
+#'   accepts one (Harmony), and set on the result afterwards otherwise.
 #' @param reduction.name Name of the 2D UMAP reduction to create. Default
 #'   \code{"umap_harmony"} (this pipeline's convention, expected by
 #'   \code{UmapPlot()}).
 #' @param reduction.key Key prefix for the UMAP reduction's columns. Default
-#'   \code{"Harmony_"}.
+#'   \code{"Harmony_"}. Must differ between runs on different assays (e.g.
+#'   \code{"polyAUMAP_"} for the polyA run).
 #' @param custom_pca Number of PCA/integration dimensions to use for
 #'   \code{IntegrateLayers()} and \code{RunUMAP()}. If \code{NULL} (default),
 #'   this is chosen automatically as the elbow ("codo") of the PCA
@@ -802,6 +824,12 @@ UploadData <- function(data, DataName, Condition = NULL, RefAnnotation1 = NULL, 
 #'   joining the first and last PC's stdev (the point of maximum curvature on
 #'   the ElbowPlot). Supply a number (1-30) to override the automatic choice.
 #'   PCA always computes 30 PCs, so \code{custom_pca} cannot exceed 30.
+#' @param keep.scale.data Logical. Keep the \code{scale.data} layer after PCA.
+#'   It is a dense cells x \code{nfeatures} matrix (about 18 GB for 750,000
+#'   cells x 3,000 features) that nothing downstream in this function needs;
+#'   set to \code{FALSE} on large objects to drop it once PCA and
+#'   integration are done. Default
+#'   \code{TRUE}.
 #' @param cluster Logical. Run \code{Seurat::FindNeighbors()} +
 #'   \code{Seurat::FindClusters()} at the end, on \code{new.reduction} with the
 #'   same \code{n_dims} used for integration and UMAP. Default \code{TRUE}.
@@ -813,18 +841,36 @@ UploadData <- function(data, DataName, Condition = NULL, RefAnnotation1 = NULL, 
 #'   \code{n_dims} was selected. Default \code{TRUE}.
 #'
 #' @return The input \code{seurat_obj}, with its assay layers split and
-#'   re-joined, and \code{"pca"}, \code{new.reduction}, and
+#'   re-joined, and \code{pca.name}, \code{new.reduction}, and
 #'   \code{reduction.name} reductions computed. The \code{n_dims} used is
-#'   stored at \code{seurat_obj@misc$n_dims} for later reference. With
+#'   stored per integrated reduction at
+#'   \code{seurat_obj@misc$n_dims_by_reduction[[new.reduction]]} (use these as
+#'   \code{dims.list} in \code{FindMultiModalNeighbors()}). For backward
+#'   compatibility it is also stored at \code{seurat_obj@misc$n_dims}, but only
+#'   when \code{assay} is the object's default assay or \code{misc$n_dims} is
+#'   still empty -- so running the pipeline on a secondary assay (e.g.
+#'   \code{"polyA"}) does not overwrite the RNA value. With
 #'   \code{cluster = TRUE}, also the \code{"<assay>_nn"}/\code{"<assay>_snn"}
 #'   graphs and one cluster column per resolution (column prefix stored at
-#'   \code{seurat_obj@misc$cluster_prefix}).
+#'   \code{seurat_obj@misc$cluster_prefix_by_assay[[assay]]}, and at
+#'   \code{seurat_obj@misc$cluster_prefix} under the same rule as
+#'   \code{n_dims}).
 #'
 #' @examples
 #' \dontrun{
 #' seurat_obj <- SeuratPipeline(seurat_obj)
 #' seurat_obj <- SeuratPipeline(seurat_obj, custom_pca = 10)
 #' seurat_obj <- SeuratPipeline(seurat_obj, resolutions = c(0.1, 0.3, 0.5))
+#'
+#' # Second modality on the same object (e.g. for WNN), without touching the
+#' # RNA reductions:
+#' seurat_obj <- SeuratPipeline(seurat_obj, sample_col = "SequencingSample",
+#'                              assay = "polyA", nfeatures = 3000,
+#'                              pca.name = "pca_polyA",
+#'                              new.reduction = "harmony_polyA",
+#'                              reduction.name = "umap_polyA",
+#'                              reduction.key = "polyAUMAP_",
+#'                              cluster = FALSE)
 #' }
 #'
 #' @export
@@ -834,10 +880,14 @@ SeuratPipeline <- function(
     assay = "RNA",
     nfeatures = 2000,
     method = Seurat::HarmonyIntegration,
+    pca.name = "pca",
+    pca.key = NULL,
     new.reduction = "harmony",
+    integration.key = NULL,
     reduction.name = "umap_harmony",
     reduction.key = "Harmony_",
     custom_pca = NULL,
+    keep.scale.data = TRUE,
     cluster = TRUE,
     resolutions = seq(0.1, 1, 0.1),
     verbose = TRUE
@@ -848,6 +898,36 @@ SeuratPipeline <- function(
   if (!assay %in% SeuratObject::Assays(seurat_obj)) {
     stop("assay '", assay, "' not found in seurat_obj. Available assays: ",
          paste(SeuratObject::Assays(seurat_obj), collapse = ", "))
+  }
+
+  # Reduction names must be distinct from each other; reduction keys must be
+  # distinct from every *other* reduction already in the object (SeuratObject
+  # refuses or silently renames a duplicated key). Reductions this call is
+  # about to overwrite (same name) are excluded from the key check.
+  red_names <- c(pca.name, new.reduction, reduction.name)
+  if (anyDuplicated(red_names)) {
+    stop("`pca.name`, `new.reduction` and `reduction.name` must all be different.")
+  }
+  .key_from_name <- function(nm) paste0(gsub("[^[:alnum:]]", "", nm), "_")
+  if (is.null(pca.key)) {
+    pca.key <- if (identical(pca.name, "pca")) "PC_" else .key_from_name(pca.name)
+  }
+  # NULL keeps the integration method's own default key (e.g. "harmony_").
+  if (is.null(integration.key) && !identical(new.reduction, "harmony")) {
+    integration.key <- .key_from_name(new.reduction)
+  }
+  new_keys <- c(pca.key, integration.key, reduction.key)
+  if (anyDuplicated(new_keys)) {
+    stop("Reduction keys must all be different; got: ", paste(new_keys, collapse = ", "))
+  }
+  other_reds <- setdiff(SeuratObject::Reductions(seurat_obj), red_names)
+  other_keys <- vapply(other_reds, function(r) SeuratObject::Key(seurat_obj[[r]]), character(1))
+  clash <- intersect(new_keys, other_keys)
+  if (length(clash)) {
+    stop("Reduction key(s) ", paste0("'", clash, "'", collapse = ", "),
+         " already used by reduction(s) ",
+         paste0("'", names(other_keys)[other_keys %in% clash], "'", collapse = ", "),
+         ". Set `pca.key`, `integration.key` or `reduction.key` to unused values.")
   }
 
   # PCA always computes 30 PCs; the elbow selection considers this same range.
@@ -875,48 +955,85 @@ SeuratPipeline <- function(
   }
 
   # Seurat v5 needs the assay split into one layer per sample *before*
-  # IntegrateLayers() -- see @param sample_col above for why.
+  # IntegrateLayers() -- see @param sample_col above for why. Join first in
+  # case the assay is already split (e.g. a re-run), so split() starts from a
+  # single counts layer.
+  if (length(SeuratObject::Layers(seurat_obj[[assay]], search = "counts")) > 1) {
+    seurat_obj[[assay]] <- SeuratObject::JoinLayers(seurat_obj[[assay]])
+  }
   seurat_obj[[assay]] <- split(seurat_obj[[assay]], f = seurat_obj[[sample_col, drop = TRUE]])
 
   # Internal Seurat steps are always run with verbose = FALSE so their
   # per-layer "Performing log-normalization" progress bars don't flood the
   # console; this function's own high-level messages (gated on `verbose`) are
   # kept as the progress signal instead.
-  if (verbose) message("Normalizing, finding variable features, scaling, and running PCA...")
+  if (verbose) message("[", assay, "] Normalizing, finding variable features, scaling, and running PCA...")
   seurat_obj <- Seurat::NormalizeData(seurat_obj, assay = assay, verbose = FALSE)
   seurat_obj <- Seurat::FindVariableFeatures(
     seurat_obj, selection.method = "vst", nfeatures = nfeatures, assay = assay, verbose = FALSE
   )
+  # Variable features of *this* assay. VariableFeatures(seurat_obj) would
+  # return the DefaultAssay's features, which is wrong whenever
+  # assay != DefaultAssay(seurat_obj) (e.g. running on "polyA" while the
+  # default is "RNA").
+  hvf <- SeuratObject::VariableFeatures(seurat_obj[[assay]])
+  if (!length(hvf)) {
+    stop("No variable features found for assay '", assay, "'.")
+  }
   seurat_obj <- Seurat::ScaleData(
-    seurat_obj, features = Seurat::VariableFeatures(seurat_obj), assay = assay, verbose = FALSE
+    seurat_obj, features = hvf, assay = assay, verbose = FALSE
   )
   seurat_obj <- Seurat::RunPCA(
-    seurat_obj, features = Seurat::VariableFeatures(seurat_obj), npcs = max_dims, assay = assay, verbose = FALSE
+    seurat_obj, features = hvf, npcs = max_dims, assay = assay,
+    reduction.name = pca.name, reduction.key = pca.key, verbose = FALSE
   )
-
   # Pick the number of dimensions to carry into integration/UMAP. Default is the
   # geometric elbow of the PCA stdev curve (.suggest_n_dims: the PC farthest
   # from the chord joining the first and last PC -- the actual "codo" of the
   # ElbowPlot) over the 30 PCs; `custom_pca` overrides it with a fixed value.
   if (is.null(custom_pca)) {
-    n_dims <- .suggest_n_dims(seurat_obj, reduction.method = "pca", n.pcs = max_dims)
+    n_dims <- .suggest_n_dims(seurat_obj, reduction.method = pca.name, n.pcs = max_dims)
     if (verbose) {
-      message("Auto-selected n_dims = ", n_dims, " (elbow / maximum curvature of the PCA stdev curve).")
+      message("[", assay, "] Auto-selected n_dims = ", n_dims,
+              " (elbow / maximum curvature of the PCA stdev curve).")
     }
   } else {
     n_dims <- custom_pca
-    if (verbose) message("Using custom_pca = ", n_dims, " dimensions.")
+    if (verbose) message("[", assay, "] Using custom_pca = ", n_dims, " dimensions.")
   }
 
-  seurat_obj <- Seurat::IntegrateLayers(
-    seurat_obj,
+  integrate_args <- list(
+    object         = seurat_obj,
     method         = method,
-    orig.reduction = "pca",
+    orig.reduction = pca.name,
     assay          = assay,
+    features       = hvf,
     new.reduction  = new.reduction,
     dims           = 1:n_dims,
     verbose        = FALSE
   )
+  # IntegrateLayers() forwards extra arguments to the method. Only some
+  # methods take a key (HarmonyIntegration's is `key`; CCA/RPCA/JointPCA have
+  # none), so pass it only where accepted -- avoids a "Key taken" rename when
+  # a second Harmony run would reuse "harmony_" -- and enforce it afterwards
+  # for every method.
+  if (!is.null(integration.key) && "key" %in% names(formals(method))) {
+    integrate_args$key <- integration.key
+  }
+  seurat_obj <- do.call(Seurat::IntegrateLayers, integrate_args)
+  if (!is.null(integration.key) &&
+      !identical(SeuratObject::Key(seurat_obj[[new.reduction]]), integration.key)) {
+    dr <- seurat_obj[[new.reduction]]
+    SeuratObject::Key(dr) <- integration.key
+    seurat_obj[[new.reduction]] <- dr
+  }
+
+  # scale.data is only needed up to here: RunPCA() uses it, and
+  # IntegrateLayers() intersects `features` with the scale.data features, so
+  # it cannot be dropped before integration.
+  if (!isTRUE(keep.scale.data)) {
+    seurat_obj[[assay]]$scale.data <- NULL
+  }
 
   # Merge the per-sample layers back into one now that integration is done
   seurat_obj[[assay]] <- SeuratObject::JoinLayers(seurat_obj[[assay]])
@@ -930,12 +1047,19 @@ SeuratPipeline <- function(
     verbose        = FALSE
   )
 
+  # Legacy single-value slots (@misc$n_dims, @misc$cluster_prefix) are only
+  # written for the default assay, or when still empty, so a run on a
+  # secondary assay keeps the primary (RNA) values that other code reads.
+  write_legacy <- function(slot) {
+    identical(assay, SeuratObject::DefaultAssay(seurat_obj)) || is.null(seurat_obj@misc[[slot]])
+  }
+
   # Clustering on the same integrated reduction and the same n_dims as the
   # integration/UMAP above, at every requested resolution.
   if (isTRUE(cluster)) {
     graph <- paste0(assay, "_snn")
     if (verbose) {
-      message("Clustering (", new.reduction, ", dims 1:", n_dims, ") at resolution(s): ",
+      message("[", assay, "] Clustering (", new.reduction, ", dims 1:", n_dims, ") at resolution(s): ",
               paste(resolutions, collapse = ", "))
     }
     seurat_obj <- Seurat::FindNeighbors(
@@ -951,16 +1075,18 @@ SeuratPipeline <- function(
       resolution = resolutions,
       verbose    = FALSE
     )
-    seurat_obj@misc$cluster_prefix <- paste0(graph, "_res.")
+    prefix <- paste0(graph, "_res.")
+    seurat_obj@misc$cluster_prefix_by_assay[[assay]] <- prefix
+    if (write_legacy("cluster_prefix")) seurat_obj@misc$cluster_prefix <- prefix
     if (verbose) {
-      cols <- intersect(paste0(seurat_obj@misc$cluster_prefix, resolutions),
-                        colnames(seurat_obj@meta.data))
+      cols <- intersect(paste0(prefix, resolutions), colnames(seurat_obj@meta.data))
       n_cl <- vapply(cols, function(cl) length(unique(seurat_obj@meta.data[[cl]])), integer(1))
-      message("Clusters per resolution: ",
+      message("[", assay, "] Clusters per resolution: ",
               paste0(sub(".*_res\\.", "", cols), " = ", n_cl, collapse = ", "))
     }
   }
 
-  seurat_obj@misc$n_dims <- n_dims
+  seurat_obj@misc$n_dims_by_reduction[[new.reduction]] <- n_dims
+  if (write_legacy("n_dims")) seurat_obj@misc$n_dims <- n_dims
   seurat_obj
 }
