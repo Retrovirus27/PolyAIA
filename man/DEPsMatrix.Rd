@@ -54,6 +54,7 @@ DEPsMatrix(
   min_rep_pairs = 0.9,
   return_filter = FALSE,
   return_seurat = FALSE,
+  return_counts = FALSE,
   verbose = TRUE
 )
 }
@@ -317,6 +318,23 @@ Default \code{FALSE}.}
 (residual-bearing, when \code{Pasta = TRUE}) Seurat object for
 \code{PolyAPlot()} coverage tracks. Default \code{FALSE}.}
 
+\item{return_counts}{Logical. If \code{TRUE}, the list also has
+\code{$counts}: the per-replicate pseudobulk reads of the proximal and
+distal site of every RED row, one row per row of \code{$red_scores}
+(same order). Identifier columns (\code{Cells}, the extra
+\code{comparisons} label columns, \code{Condition}, \code{Gene_symbol},
+\code{Ensembl_ID}, \code{chr}, \code{strand}, \code{npas},
+\code{RED_type}, \code{p_/d_site_id}, \code{p_/d_peak},
+\code{p_/d_pos}, \code{p_/d_region}) are followed by
+\code{treatment_samples} / \code{control_samples} (the real pseudobulk
+sample names, comma-separated, in replicate order) and the counts
+\code{p_nread_treatment_<i>}, \code{p_nread_control_<i>},
+\code{d_nread_treatment_<i>}, \code{d_nread_control_<i>}, where
+\code{<i>} is the position in \code{treatment_samples} /
+\code{control_samples}. Single-site genes (\code{npas = 1}) carry their
+only site's reads in \code{d_nread_*}, with \code{p_nread_*} = \code{NA}.
+\code{drop_na_cols} is not applied to \code{$counts}. Default \code{FALSE}.}
+
 \item{verbose}{Logical. Print progress. Default \code{TRUE}.}
 }
 \value{
@@ -352,7 +370,8 @@ A combined \code{data.frame} of RED scores across all cell types and
   one row per peak. With \code{return_seurat = TRUE} the list also has
   \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object;
   with \code{exclude_peaks = TRUE}, \code{$peak_audit}; with
-  \code{return_filter = TRUE}, \code{$filter}.
+  \code{return_filter = TRUE}, \code{$filter}; with
+  \code{return_counts = TRUE}, \code{$counts} (see \code{return_counts}).
 }
 \description{
 Integrated pipeline that takes an annotated Seurat object (with a polyA

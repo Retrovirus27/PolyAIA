@@ -2971,6 +2971,22 @@ DEPolyAPeaks <- function(
 #'   \code{TRUE}, the list additionally includes \code{$seu} -- the
 #'   (residual-bearing, when \code{Pasta = TRUE}) Seurat object for
 #'   \code{PolyAPlot()} coverage tracks. Default \code{FALSE}.
+#' @param return_counts Logical. If \code{TRUE}, the list also has
+#'   \code{$counts}: the per-replicate pseudobulk reads of the proximal and
+#'   distal site of every RED row, one row per row of \code{$red_scores}
+#'   (same order). Identifier columns (\code{Cells}, the extra
+#'   \code{comparisons} label columns, \code{Condition}, \code{Gene_symbol},
+#'   \code{Ensembl_ID}, \code{chr}, \code{strand}, \code{npas},
+#'   \code{RED_type}, \code{p_/d_site_id}, \code{p_/d_peak},
+#'   \code{p_/d_pos}, \code{p_/d_region}) are followed by
+#'   \code{treatment_samples} / \code{control_samples} (the real pseudobulk
+#'   sample names, comma-separated, in replicate order) and the counts
+#'   \code{p_nread_treatment_<i>}, \code{p_nread_control_<i>},
+#'   \code{d_nread_treatment_<i>}, \code{d_nread_control_<i>}, where
+#'   \code{<i>} is the position in \code{treatment_samples} /
+#'   \code{control_samples}. Single-site genes (\code{npas = 1}) carry their
+#'   only site's reads in \code{d_nread_*}, with \code{p_nread_*} = \code{NA}.
+#'   \code{drop_na_cols} is not applied to \code{$counts}. Default \code{FALSE}.
 #' @param verbose Logical. Print progress. Default \code{TRUE}.
 #'
 #' @return A combined \code{data.frame} of RED scores across all cell types and
@@ -3005,7 +3021,8 @@ DEPolyAPeaks <- function(
 #'   one row per peak. With \code{return_seurat = TRUE} the list also has
 #'   \code{$seu}, the (residual-bearing, when \code{Pasta = TRUE}) object;
 #'   with \code{exclude_peaks = TRUE}, \code{$peak_audit}; with
-#'   \code{return_filter = TRUE}, \code{$filter}.
+#'   \code{return_filter = TRUE}, \code{$filter}; with
+#'   \code{return_counts = TRUE}, \code{$counts} (see \code{return_counts}).
 #'
 #' @examples
 #' \dontrun{
@@ -3086,6 +3103,7 @@ DEPsMatrix <- function(
     min_rep_pairs       = 0.9,
     return_filter       = FALSE,
     return_seurat       = FALSE,
+    return_counts       = FALSE,
     verbose             = TRUE
 ) {
 
@@ -3630,6 +3648,7 @@ DEPsMatrix <- function(
         min_site_usage    = min_site_usage,
         min_rep_pairs     = min_rep_pairs,
         keep_counts       = isTRUE(return_filter),
+        keep_site_counts  = isTRUE(return_counts),
         keep_peaks        = keep_ct[[ct]],
         red_tests         = red_tests
       ),
@@ -3653,15 +3672,23 @@ DEPsMatrix <- function(
     empty <- if (!is.null(red) && nrow(red) == 0) {
       paste0(canonical_by_san[[ct]], " / ", cmp$Condition)
     } else NULL
+    site_counts <- NULL
     if (!is.null(red) && nrow(red) > 0) {
+      site_counts <- attr(red, "red_site_counts")
       # Report the canonical (Seurat-object) cell-type name, not the dotted one.
       red$Cells     <- canonical_by_san[[ct]]
       red$Condition <- cmp$Condition
       for (col in extra_cols) red[[col]] <- cmp[[col]]
+      attr(red, "red_site_counts") <- NULL
+      if (!is.null(site_counts)) {
+        site_counts$Cells     <- canonical_by_san[[ct]]
+        site_counts$Condition <- cmp$Condition
+        for (col in extra_cols) site_counts[[col]] <- cmp[[col]]
+      }
     } else {
       red <- NULL
     }
-    list(red = red, fail = err, empty = empty, filter = filt)
+    list(red = red, fail = err, empty = empty, filter = filt, counts = site_counts)
   }
 
   if (isTRUE(parallel) && is.null(BPPARAM)) {
@@ -3688,6 +3715,9 @@ DEPsMatrix <- function(
   block_fail   <- unlist(lapply(block_res, `[[`, "fail"))
   block_empty  <- unlist(lapply(block_res, `[[`, "empty"))
   block_filter <- lapply(block_res, `[[`, "filter")
+  site_counts  <- if (isTRUE(return_counts)) {
+    dplyr::bind_rows(lapply(block_res, `[[`, "counts"))
+  } else NULL
   if (is.null(block_fail))  block_fail  <- character(0)
   if (is.null(block_empty)) block_empty <- character(0)
   rm(block_res)
@@ -3793,6 +3823,28 @@ DEPsMatrix <- function(
   # Pasta = TRUE) Seurat object for PolyAPlot() coverage tracks.
   res <- list(red_scores = out, polyAdb = polyAdb)
   if (isTRUE(return_seurat)) res$seu <- seu
+
+  # Per-replicate reads of each RED row's proximal / distal site, one row per
+  # red_scores row (same order), with the site identifiers and the real
+  # sample names behind replicate index <i>.
+  if (isTRUE(return_counts)) {
+    nread_cols <- grep("^[pd]_nread_(treatment|control)_[0-9]+$",
+                       colnames(site_counts), value = TRUE)
+    # numeric replicate order (1, 2, ..., 10), not alphabetical
+    nread_cols <- nread_cols[order(substr(nread_cols, 1, 1) == "d",
+                                   grepl("_control_", nread_cols),
+                                   as.integer(sub("^.*_", "", nread_cols)))]
+    res$counts <- site_counts %>%
+      dplyr::select(
+        dplyr::any_of(c("Cells", extra_cols, "Condition",
+                        "Gene_symbol", "Ensembl_ID", "chr", "strand", "npas",
+                        "RED_type",
+                        "p_site_id", "d_site_id", "p_peak", "d_peak",
+                        "p_pos", "d_pos", "p_region", "d_region",
+                        "treatment_samples", "control_samples")),
+        dplyr::all_of(nread_cols)
+      )
+  }
 
   # Peak audit used for exclude_peaks (reuse it via `peak_audit =` next run).
   if (isTRUE(exclude_peaks)) res$peak_audit <- peak_audit
@@ -4117,6 +4169,7 @@ PeakAudit <- function(seu,
     min_site_usage    = 0.05,
     min_rep_pairs     = 0.9,
     keep_counts       = FALSE,
+    keep_site_counts  = FALSE,
     keep_peaks        = NULL,
     red_tests         = c("LRT", "QL", "fisher", "ttest"),
     verbose           = FALSE
@@ -4405,7 +4458,19 @@ PeakAudit <- function(seu,
         # gDPAU/DPAU are undefined for a single-site gene (need a pair / n >= 2).
         gDPAU             = NA_real_,
         DPAU              = NA_real_
-      ))
+      ) %>%
+        # The only site is the distal one: its per-replicate reads go in
+        # d_nread_*; p_nread_* stay NA (no proximal site).
+        dplyr::bind_cols(
+          purrr::map_dfc(seq_len(n_trt), ~ tibble::tibble(
+            !!paste0("p_nread_treatment_", .x) := NA_real_)),
+          purrr::map_dfc(seq_len(n_ctrl), ~ tibble::tibble(
+            !!paste0("p_nread_control_", .x) := NA_real_)),
+          purrr::map_dfc(seq_len(n_trt), ~ tibble::tibble(
+            !!paste0("d_nread_treatment_", .x) := as.numeric(site[[paste0("polyA_treatment_", .x)]]))),
+          purrr::map_dfc(seq_len(n_ctrl), ~ tibble::tibble(
+            !!paste0("d_nread_control_", .x) := as.numeric(site[[paste0("polyA_control_", .x)]])))
+        ))
     }
 
     # Calculate proportions
@@ -4782,6 +4847,25 @@ PeakAudit <- function(seu,
     dplyr::ungroup()
   Matrix$RED_test <- red_design$term
 
+  # DEPsMatrix(return_counts = TRUE): per-replicate proximal/distal reads with
+  # the site identifiers, row-aligned with the RED table returned below.
+  site_counts <- NULL
+  if (isTRUE(keep_site_counts)) {
+    site_counts <- Matrix %>%
+      dplyr::select(
+        dplyr::any_of(c("Gene_symbol", "Ensembl_ID", "chr", "strand", "npas",
+                        "RED_type",
+                        "p_site_id", "d_site_id", "p_peak", "d_peak",
+                        "p_pos", "d_pos", "p_region", "d_region")),
+        dplyr::any_of(c(p_nread_trt_cols, p_nread_ctrl_cols,
+                        d_nread_trt_cols, d_nread_ctrl_cols))
+      ) %>%
+      dplyr::mutate(
+        treatment_samples = paste(trt_cols_orig,  collapse = ","),
+        control_samples   = paste(ctrl_cols_orig, collapse = ",")
+      )
+  }
+
   Matrix <- Matrix %>%
     # BH correction across all genes, separately per test and RED type
     dplyr::group_by(RED_type) %>%
@@ -4841,7 +4925,9 @@ PeakAudit <- function(seu,
       #dplyr::all_of(d_nread_ctrl_cols)
     )
 
-  return(.with_filter(Matrix))
+  Matrix <- .with_filter(Matrix)
+  if (!is.null(site_counts)) attr(Matrix, "red_site_counts") <- site_counts
+  return(Matrix)
 }
 
 
