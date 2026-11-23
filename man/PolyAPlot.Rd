@@ -267,7 +267,7 @@ pair; with more than one pair \code{p1}/\code{d1}, \code{p2}/\code{d2},
 \item{show_stats}{Logical. Centred title \code{"<cell type> - <gene>"} and
 one line per RED pair shown with the event type, RED and FDR, e.g.
 \code{"Intronic APA | REDi = -0.45, FDR = 0.001"} or
-\code{"3' UTR APA | REDu = 0.30, FDR = 0.02"}. The cell type, condition
+\code{"3' most exon APA | REDu = 0.30, FDR = 0.02"}. The cell type, condition
 and pair labels (\code{p1-d1}) are added to the lines only when the plot
 shows more than one of them. Default \code{TRUE}.}
 

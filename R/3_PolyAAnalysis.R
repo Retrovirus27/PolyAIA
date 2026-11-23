@@ -1242,7 +1242,7 @@ PolyAPipeline <- function(seurat_obj,
 #' @param show_stats Logical. Centred title \code{"<cell type> - <gene>"} and
 #'   one line per RED pair shown with the event type, RED and FDR, e.g.
 #'   \code{"Intronic APA | REDi = -0.45, FDR = 0.001"} or
-#'   \code{"3' UTR APA | REDu = 0.30, FDR = 0.02"}. The cell type, condition
+#'   \code{"3' most exon APA | REDu = 0.30, FDR = 0.02"}. The cell type, condition
 #'   and pair labels (\code{p1-d1}) are added to the lines only when the plot
 #'   shows more than one of them. Default \code{TRUE}.
 #' @param fdr_col Column of \code{deg_list} shown as FDR. Default
@@ -2335,7 +2335,7 @@ PolyAPlot <- function(
   }
 
   # Title "<cell type> - <gene>" (centred) and one subtitle line per RED pair
-  # shown: "Intronic APA | REDi = -0.45, FDR = 0.001" / "3' UTR APA | REDu = ...".
+  # shown: "Intronic APA | REDi = -0.45, FDR = 0.001" / "3' most exon APA | REDu = ...".
   # Cell type / condition / pair labels only enter a line when the plot shows
   # more than one of them (otherwise the lines would be ambiguous).
   if (isTRUE(show_stats) && n_pairs > 0) {
@@ -2347,7 +2347,7 @@ PolyAPlot <- function(
     fdr_txt <- if (is.na(fdr_use)) "NA" else formatC(st[[fdr_use]], format = "g", digits = 2)
     red_type <- if ("RED_type" %in% colnames(st)) as.character(st$RED_type) else rep("RED", nrow(st))
     event <- ifelse(red_type == "REDi", "Intronic APA",
-                    ifelse(red_type == "REDu", "3' UTR APA", "APA"))
+                    ifelse(red_type == "REDu", "3' most exon APA", "APA"))
     ct   <- if ("Cells" %in% colnames(st)) as.character(st$Cells) else rep("", nrow(st))
     cond <- if ("Condition" %in% colnames(st)) as.character(st$Condition) else rep("", nrow(st))
     pre  <- paste0(if (length(unique(ct)) > 1) paste0(ct, " | ") else "",
